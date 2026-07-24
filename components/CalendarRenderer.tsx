@@ -50,6 +50,7 @@ export default function CalendarRenderer() {
   const [hourLabels, setHourLabels] = useState<{ top: number; text: string }[]>([]);
   const [subCols, setSubCols] = useState(10);
   const [threshold, setThreshold] = useState(12);
+  const [focus, setFocus] = useState(50);
   const [showLabels, setShowLabels] = useState(true);
   const [playing, setPlaying] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
@@ -57,6 +58,7 @@ export default function CalendarRenderer() {
   // Refs for the render loop (mutable, read every frame)
   const subColsRef = useRef(subCols);
   const thresholdRef = useRef(threshold / 100);
+  const focusRef = useRef(focus / 100);
   const showLabelsRef = useRef(showLabels);
   const playingRef = useRef(playing);
   const sourceRef = useRef<Source>("demo");
@@ -71,6 +73,7 @@ export default function CalendarRenderer() {
 
   useEffect(() => { subColsRef.current = subCols; }, [subCols]);
   useEffect(() => { thresholdRef.current = threshold / 100; }, [threshold]);
+  useEffect(() => { focusRef.current = focus / 100; }, [focus]);
   useEffect(() => { showLabelsRef.current = showLabels; }, [showLabels]);
   useEffect(() => { playingRef.current = playing; }, [playing]);
 
@@ -213,22 +216,30 @@ export default function CalendarRenderer() {
       const cellH = Math.max(7, Math.min(18, cellW * 0.8));
       const rows = Math.max(1, Math.floor(H / cellH));
 
-      // cover-crop sample of the source into a cols x rows buffer
+      // Cover-crop the source into a cols x rows buffer. The crop matches the
+      // aspect ratio the grid is actually drawn at (cols*cellW by rows*cellH),
+      // so footage fills every day column without stretching. The overflowing
+      // axis is cropped, positioned by the focal point: 0 = top/left edge,
+      // 1 = bottom/right edge, 0.5 = centered.
       off.width = cols;
       off.height = rows;
-      const stageAR = W / H;
+      const gridAR = (cols * cellW) / (rows * cellH);
       const srcAR = src.w / src.h;
+      const focus = focusRef.current;
       let sx: number, sy: number, sw: number, sh: number;
-      if (srcAR > stageAR) {
+      if (srcAR > gridAR) {
+        // Source is wider than the grid: keep full height, crop left/right.
         sh = src.h;
-        sw = sh * stageAR;
-        sx = (src.w - sw) / 2;
+        sw = sh * gridAR;
+        sx = (src.w - sw) * focus;
         sy = 0;
       } else {
+        // Source is taller than the grid (e.g. vertical footage): keep full
+        // width so every day column is covered, crop the top and bottom.
         sw = src.w;
-        sh = sw / stageAR;
+        sh = sw / gridAR;
         sx = 0;
-        sy = (src.h - sh) / 2;
+        sy = (src.h - sh) * focus;
       }
       offCtx!.drawImage(src.el, sx, sy, sw, sh, 0, 0, cols, rows);
       const data = offCtx!.getImageData(0, 0, cols, rows).data;
@@ -466,6 +477,21 @@ export default function CalendarRenderer() {
               max={60}
               value={threshold}
               onChange={(e) => setThreshold(+e.target.value)}
+            />
+          </div>
+          <div className="ctl">
+            <label>
+              Focal point{" "}
+              <span>
+                {focus === 50 ? "Center" : focus < 50 ? `${50 - focus}% up` : `${focus - 50}% down`}
+              </span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={focus}
+              onChange={(e) => setFocus(+e.target.value)}
             />
           </div>
           <div className="chk">
