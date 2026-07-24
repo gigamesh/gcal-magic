@@ -2,18 +2,85 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// Approximate hex values for Google Calendar's event color palette
-const PALETTE = [
+// Base Google Calendar event hues. Each is expanded into several shades below
+// so nearest-color matching has more tonal range to hit — closer to the video.
+const BASE_HUES = [
   "#D50000", "#E67C73", "#F4511E", "#F6BF26", "#33B679", "#0B8043",
   "#039BE5", "#3F51B5", "#7986CB", "#8E24AA", "#616161",
-].map((hex) => ({
-  hex,
-  r: parseInt(hex.slice(1, 3), 16),
-  g: parseInt(hex.slice(3, 5), 16),
-  b: parseInt(hex.slice(5, 7), 16),
-}));
+];
 
-const TITLES = ["Sync", "1:1", "Standup", "Focus", "Review", "Lunch", "Demo", "Go", "OOO", "Gym"];
+// Blend amounts per hue: negative darkens toward black, positive lightens
+// toward white, 0 keeps the iconic base color.
+const SHADES = [-0.42, -0.22, 0, 0.22, 0.44];
+
+const clamp255 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v));
+
+function makeColor(r: number, g: number, b: number) {
+  r = clamp255(r);
+  g = clamp255(g);
+  b = clamp255(b);
+  const hex = "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+  // Dark event colors read best with white text; light ones with dark text.
+  const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return { hex, r, g, b, text: luma > 0.6 ? "#3c4043" : "#fff" };
+}
+
+const PALETTE = BASE_HUES.flatMap((hex) => {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return SHADES.map((s) => {
+    const t = Math.abs(s);
+    const target = s < 0 ? 0 : 255;
+    return makeColor(r + (target - r) * t, g + (target - g) * t, b + (target - b) * t);
+  });
+});
+
+// Lowest resolution: one full-width event per day column, every one titled.
+const MIN_RES = 4;
+
+const TITLES = [
+  "Quick sync (90 min)",
+  "Sync about the sync",
+  "Pre-meeting meeting",
+  "Optional (mandatory)",
+  "Circle back",
+  "Touch base",
+  "Deep work",
+  "Focus time (no focus)",
+  "Align on alignment",
+  "Urgent non-urgent",
+  "Retro of the retro",
+  "Standup (sitting down)",
+  "Take this offline",
+  "Vibes check",
+  "1:1 with myself",
+  "Mandatory fun",
+  "Brainstorm (no ideas)",
+  "Quick question (1h)",
+  "Final final v2",
+  "Definitely last sync",
+  "OOO (still online)",
+  "PTO (checking email)",
+  "Happy hour (on Zoom)",
+  "All-hands, no answers",
+  "Synergy sync",
+  "Break sync",
+  "Weekly (it's daily)",
+  "Table this",
+  "Loop in stakeholders",
+  "Reply-all thread",
+  "Lunch & learn (no food)",
+  "Realign north star",
+  "Parking lot",
+  "Ideate & iterate",
+  "Soft launch (it's hard)",
+  "Q3 planning in Q4",
+  "Book time to book time",
+  "Low-key high-stakes",
+  "Brief 2-hour chat",
+  "Post-mortem (it's fine)",
+];
 const DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -28,7 +95,7 @@ interface DayCell {
   today: boolean;
 }
 
-function nearest(r: number, g: number, b: number) {
+function nearestIdx(r: number, g: number, b: number) {
   let best = 0;
   let bd = Infinity;
   for (let i = 0; i < PALETTE.length; i++) {
@@ -39,7 +106,46 @@ function nearest(r: number, g: number, b: number) {
       best = i;
     }
   }
-  return PALETTE[best];
+  return best;
+}
+
+// Push an event color toward gray (sf<1) or over-saturate it (sf>1) around its
+// own luminance, for the event color control.
+function satColor(color: { r: number; g: number; b: number }, sf: number) {
+  const gray = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
+  const r = clamp255(gray + (color.r - gray) * sf);
+  const g = clamp255(gray + (color.g - gray) * sf);
+  const b = clamp255(gray + (color.b - gray) * sf);
+  return `rgb(${r},${g},${b})`;
+}
+
+// Stable pseudo-random in [0,1) from a grid position, so probabilistic merges
+// stay put across frames instead of flickering.
+function hash2(a: number, b: number) {
+  let h = (Math.imul(a, 73856093) ^ Math.imul(b, 19349663)) >>> 0;
+  h = Math.imul(h ^ (h >>> 15), 2246822519);
+  h ^= h >>> 13;
+  return (h >>> 0) / 4294967296;
+}
+
+// True when row `yb` holds exactly color `idx` across [x0,x1) with the same left
+// and right boundaries — i.e. an identical rectangle span, safe to merge upward.
+// A day boundary (every `perDay` columns) counts as a hard edge, so a merge is
+// allowed to butt against it even if the neighbouring day shares the color.
+function runMatches(
+  ci: Int16Array,
+  cols: number,
+  perDay: number,
+  yb: number,
+  x0: number,
+  x1: number,
+  idx: number,
+) {
+  const base = yb * cols;
+  if (x0 % perDay !== 0 && ci[base + x0 - 1] === idx) return false;
+  if (x1 % perDay !== 0 && ci[base + x1] === idx) return false;
+  for (let x = x0; x < x1; x++) if (ci[base + x] !== idx) return false;
+  return true;
 }
 
 export default function CalendarRenderer() {
@@ -51,6 +157,11 @@ export default function CalendarRenderer() {
   const [subCols, setSubCols] = useState(10);
   const [threshold, setThreshold] = useState(12);
   const [focus, setFocus] = useState(50);
+  const [invert, setInvert] = useState(false);
+  const [brightness, setBrightness] = useState(100);
+  const [inSat, setInSat] = useState(100);
+  const [evSat, setEvSat] = useState(100);
+  const [evOpacity, setEvOpacity] = useState(100);
   const [showLabels, setShowLabels] = useState(true);
   const [playing, setPlaying] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
@@ -59,6 +170,11 @@ export default function CalendarRenderer() {
   const subColsRef = useRef(subCols);
   const thresholdRef = useRef(threshold / 100);
   const focusRef = useRef(focus / 100);
+  const invertRef = useRef(invert);
+  const brightnessRef = useRef(brightness / 100);
+  const inSatRef = useRef(inSat / 100);
+  const evSatRef = useRef(evSat / 100);
+  const evOpacityRef = useRef(evOpacity / 100);
   const showLabelsRef = useRef(showLabels);
   const playingRef = useRef(playing);
   const sourceRef = useRef<Source>("demo");
@@ -74,6 +190,11 @@ export default function CalendarRenderer() {
   useEffect(() => { subColsRef.current = subCols; }, [subCols]);
   useEffect(() => { thresholdRef.current = threshold / 100; }, [threshold]);
   useEffect(() => { focusRef.current = focus / 100; }, [focus]);
+  useEffect(() => { invertRef.current = invert; }, [invert]);
+  useEffect(() => { brightnessRef.current = brightness / 100; }, [brightness]);
+  useEffect(() => { inSatRef.current = inSat / 100; }, [inSat]);
+  useEffect(() => { evSatRef.current = evSat / 100; }, [evSat]);
+  useEffect(() => { evOpacityRef.current = evOpacity / 100; }, [evOpacity]);
   useEffect(() => { showLabelsRef.current = showLabels; }, [showLabels]);
   useEffect(() => { playingRef.current = playing; }, [playing]);
 
@@ -211,7 +332,9 @@ export default function CalendarRenderer() {
         return;
       }
 
-      const cols = 7 * subColsRef.current;
+      const atLowest = subColsRef.current <= MIN_RES;
+      const perDay = atLowest ? 1 : subColsRef.current;
+      const cols = 7 * perDay;
       const cellW = W / cols;
       const cellH = Math.max(7, Math.min(18, cellW * 0.8));
       const rows = Math.max(1, Math.floor(H / cellH));
@@ -245,45 +368,155 @@ export default function CalendarRenderer() {
       const data = offCtx!.getImageData(0, 0, cols, rows).data;
 
       ctx!.clearRect(0, 0, W, H);
-      const gapX = Math.min(2, cellW * 0.15);
+      const gapX = atLowest ? 0 : Math.min(2, cellW * 0.15);
       const gapY = 1.5;
       const thr = thresholdRef.current;
-      ctx!.font = "500 8px Roboto, Arial";
+      const invert = invertRef.current;
+      const bright = brightnessRef.current;
+      const inSat = inSatRef.current;
+      const evSat = evSatRef.current;
+      const evOp = evOpacityRef.current;
+      ctx!.font = atLowest ? "500 11px Roboto, Arial" : "500 8px Roboto, Arial";
       ctx!.textBaseline = "top";
 
+      // Classify every cell into a palette shade (or -1 = empty), keeping its
+      // alpha and luminance for later. Footage color controls (invert,
+      // brightness, saturation) are applied per cell before matching.
+      const ci = new Int16Array(cols * rows);
+      const al = new Float32Array(cols * rows);
+      const lm = new Float32Array(cols * rows);
       for (let y = 0; y < rows; y++) {
         for (let x = 0; x < cols; x++) {
           const i = (y * cols + x) * 4;
-          const r = data[i];
-          const g = data[i + 1];
-          const b = data[i + 2];
-          const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-          if (lum < thr) continue;
-          const c = nearest(r, g, b);
-          ctx!.globalAlpha = 0.35 + 0.65 * Math.min(1, (lum - thr) / (1 - thr || 1));
-          ctx!.fillStyle = c.hex;
-          const px = x * cellW + gapX / 2;
-          const py = y * cellH + gapY / 2;
-          const w = cellW - gapX;
-          const h = cellH - gapY;
-          if (typeof ctx!.roundRect === "function") {
-            ctx!.beginPath();
-            ctx!.roundRect(px, py, w, h, 3);
-            ctx!.fill();
-          } else {
-            ctx!.fillRect(px, py, w, h);
+          let r = data[i];
+          let g = data[i + 1];
+          let b = data[i + 2];
+          if (invert) {
+            r = 255 - r;
+            g = 255 - g;
+            b = 255 - b;
           }
-          if (
-            showLabelsRef.current &&
-            lum > 0.55 &&
+          if (bright !== 1) {
+            r *= bright;
+            g *= bright;
+            b *= bright;
+          }
+          if (inSat !== 1) {
+            const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            r = gray + (r - gray) * inSat;
+            g = gray + (g - gray) * inSat;
+            b = gray + (b - gray) * inSat;
+          }
+          r = clamp255(r);
+          g = clamp255(g);
+          b = clamp255(b);
+          const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+          const k = y * cols + x;
+          if (lum < thr) {
+            ci[k] = -1;
+            continue;
+          }
+          ci[k] = nearestIdx(r, g, b);
+          al[k] = 0.35 + 0.65 * Math.min(1, (lum - thr) / (1 - thr || 1));
+          lm[k] = lum;
+        }
+      }
+
+      // Draw one event rectangle spanning cells [cx,cx+cw) x [cy,cy+ch).
+      function drawEvent(
+        cx: number,
+        cy: number,
+        cw: number,
+        ch: number,
+        color: (typeof PALETTE)[number],
+        alpha: number,
+        lumMax: number,
+      ) {
+        const px = cx * cellW + gapX / 2;
+        const py = cy * cellH + gapY / 2;
+        const w = cw * cellW - gapX;
+        const h = ch * cellH - gapY;
+        ctx!.globalAlpha = Math.min(1, alpha * evOp);
+        ctx!.fillStyle = evSat === 1 ? color.hex : satColor(color, evSat);
+        if (typeof ctx!.roundRect === "function") {
+          ctx!.beginPath();
+          ctx!.roundRect(px, py, w, h, 3);
+          ctx!.fill();
+        } else {
+          ctx!.fillRect(px, py, w, h);
+        }
+        const titled =
+          atLowest ||
+          (showLabelsRef.current &&
+            lumMax > 0.55 &&
             w >= 32 &&
             h >= 9 &&
-            (x * 7 + y * 13) % 11 === 0
-          ) {
-            ctx!.globalAlpha = 0.95;
-            ctx!.fillStyle = "#fff";
-            ctx!.fillText(TITLES[(x + y) % TITLES.length], px + 3, py + 1);
+            hash2(cx * 2 + 1, cy) < 0.16);
+        if (titled) {
+          const label = TITLES[(cx * 3 + cy * 7) % TITLES.length];
+          ctx!.save();
+          ctx!.beginPath();
+          ctx!.rect(px, py, w, h);
+          ctx!.clip();
+          ctx!.globalAlpha = 0.95;
+          ctx!.fillStyle = atLowest ? color.text : "#fff";
+          const ty = atLowest ? py + Math.max(1, (h - 11) / 2) : py + 1;
+          ctx!.fillText(label, px + 4, ty);
+          ctx!.restore();
+        }
+      }
+
+      // Merge same-color cells into larger events: first into horizontal runs
+      // (so a single-color row fills its full width), then absorb the run
+      // directly below when it matches — 25% of the time — for taller blocks.
+      // Only genuinely identical cells merge, so video detail is never lost.
+      const consumed = new Uint8Array(cols * rows);
+      for (let y = 0; y < rows; y++) {
+        let x = 0;
+        while (x < cols) {
+          const k = y * cols + x;
+          const idx = ci[k];
+          if (idx < 0) {
+            x++;
+            continue;
           }
+          // Extend the run within this row, but never across a day boundary so
+          // an event can't span two days.
+          let x1 = x + 1;
+          while (x1 < cols && x1 % perDay !== 0 && ci[y * cols + x1] === idx) x1++;
+          if (consumed[k]) {
+            x = x1;
+            continue;
+          }
+
+          let alphaSum = 0;
+          let n = 0;
+          let lumMax = 0;
+          for (let xx = x; xx < x1; xx++) {
+            const kk = y * cols + xx;
+            alphaSum += al[kk];
+            n++;
+            if (lm[kk] > lumMax) lumMax = lm[kk];
+          }
+
+          let y1 = y + 1;
+          while (
+            y1 < rows &&
+            runMatches(ci, cols, perDay, y1, x, x1, idx) &&
+            hash2(x + 1, y1) < 0.25
+          ) {
+            for (let xx = x; xx < x1; xx++) {
+              const kk = y1 * cols + xx;
+              alphaSum += al[kk];
+              n++;
+              consumed[kk] = 1;
+              if (lm[kk] > lumMax) lumMax = lm[kk];
+            }
+            y1++;
+          }
+
+          drawEvent(x, y, x1 - x, y1 - y, PALETTE[idx], alphaSum / n, lumMax);
+          x = x1;
         }
       }
       ctx!.globalAlpha = 1;
@@ -461,7 +694,7 @@ export default function CalendarRenderer() {
             </label>
             <input
               type="range"
-              min={4}
+              min={MIN_RES}
               max={16}
               value={subCols}
               onChange={(e) => setSubCols(+e.target.value)}
@@ -494,6 +727,67 @@ export default function CalendarRenderer() {
               onChange={(e) => setFocus(+e.target.value)}
             />
           </div>
+          <div className="seclabel">Footage color</div>
+          <div className="chk">
+            <input
+              type="checkbox"
+              id="invert"
+              checked={invert}
+              onChange={(e) => setInvert(e.target.checked)}
+            />
+            <label htmlFor="invert">Invert colors</label>
+          </div>
+          <div className="ctl">
+            <label>
+              Brightness <span>{brightness}%</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={200}
+              value={brightness}
+              onChange={(e) => setBrightness(+e.target.value)}
+            />
+          </div>
+          <div className="ctl">
+            <label>
+              Saturation <span>{inSat}%</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={200}
+              value={inSat}
+              onChange={(e) => setInSat(+e.target.value)}
+            />
+          </div>
+
+          <div className="seclabel">Event color</div>
+          <div className="ctl">
+            <label>
+              Vividness <span>{evSat}%</span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={200}
+              value={evSat}
+              onChange={(e) => setEvSat(+e.target.value)}
+            />
+          </div>
+          <div className="ctl">
+            <label>
+              Opacity <span>{evOpacity}%</span>
+            </label>
+            <input
+              type="range"
+              min={20}
+              max={100}
+              value={evOpacity}
+              onChange={(e) => setEvOpacity(+e.target.value)}
+            />
+          </div>
+
           <div className="chk">
             <input
               type="checkbox"
