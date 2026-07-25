@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 
 // Event hues grouped into color families — the classic Google Calendar palette
 // plus vivid/teal/cyan additions to cover the wheel. Families can be toggled on
@@ -166,7 +172,7 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-type Source = "demo" | "video" | "cam";
+type Source = "demo" | "video";
 
 interface DayCell {
   dow: string;
@@ -238,6 +244,92 @@ function runMatches(
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Keyframe timeline
+// ---------------------------------------------------------------------------
+
+// Width (px) of each lane's left "head" column (label + manual control).
+const HEAD_W = 200;
+
+type LaneKind = "number" | "bool" | "families";
+type LaneValue = number | boolean | Record<string, boolean>;
+
+interface Keyframe {
+  id: string;
+  t: number; // seconds
+  value: LaneValue;
+}
+
+interface LaneDesc {
+  id: string;
+  label: string;
+  kind: LaneKind;
+  min?: number;
+  max?: number;
+  step?: number;
+  refDivisor?: number; // value written to the ref = raw / refDivisor
+  suffix?: string;
+  palette?: boolean; // feeds buildPalette rather than a scalar ref
+}
+
+// One lane per animatable control, in display order. Mirrors the manual
+// controls exactly (ranges, ref transforms).
+const LANES: LaneDesc[] = [
+  { id: "subCols", label: "Resolution", kind: "number", min: MIN_RES, max: 16, step: 1, suffix: "/day" },
+  { id: "threshold", label: "Darkness", kind: "number", min: 0, max: 60, step: 1, refDivisor: 100, suffix: "%" },
+  { id: "focus", label: "Focal point", kind: "number", min: 0, max: 100, step: 1, refDivisor: 100, suffix: "%" },
+  { id: "updatePeriod", label: "Event hold", kind: "number", min: 0, max: 200, step: 10, suffix: "ms" },
+  { id: "brightness", label: "Brightness", kind: "number", min: 0, max: 200, step: 1, refDivisor: 100, suffix: "%" },
+  { id: "inSat", label: "Saturation", kind: "number", min: 0, max: 200, step: 1, refDivisor: 100, suffix: "%" },
+  { id: "evSat", label: "Vividness", kind: "number", min: 0, max: 200, step: 1, refDivisor: 100, suffix: "%" },
+  { id: "evOpacity", label: "Opacity", kind: "number", min: 20, max: 100, step: 1, refDivisor: 100, suffix: "%" },
+  { id: "hueShift", label: "Hue shift", kind: "number", min: -180, max: 180, step: 1, suffix: "°", palette: true },
+  { id: "lightness", label: "Lightness", kind: "number", min: -50, max: 50, step: 1, palette: true },
+  { id: "shadeCount", label: "Shade richness", kind: "number", min: 1, max: 7, step: 1, palette: true },
+  { id: "invert", label: "Invert", kind: "bool" },
+  { id: "showLabels", label: "Titles", kind: "bool" },
+  { id: "families", label: "Palette families", kind: "families", palette: true },
+];
+
+const LANE_BY_ID: Record<string, LaneDesc> = Object.fromEntries(LANES.map((l) => [l.id, l]));
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+const lerp = (a: number, b: number, f: number) => a + (b - a) * f;
+
+// Interpolate a lane's value at time t. `keys` is sorted by t, length >= 1.
+function evalLane(desc: LaneDesc, keys: Keyframe[], t: number): LaneValue {
+  if (t <= keys[0].t) return keys[0].value;
+  const last = keys[keys.length - 1];
+  if (t >= last.t) return last.value;
+  let i = 0;
+  while (i < keys.length - 1 && keys[i + 1].t <= t) i++;
+  const a = keys[i];
+  const b = keys[i + 1];
+  if (desc.kind === "number") {
+    const f = (t - a.t) / (b.t - a.t || 1);
+    return lerp(a.value as number, b.value as number, f);
+  }
+  return a.value; // step-hold for bool / families
+}
+
+function fmtLaneValue(desc: LaneDesc, v: LaneValue): string {
+  if (desc.kind === "bool") return v ? "on" : "off";
+  if (desc.kind === "families") {
+    return `${Object.values(v as Record<string, boolean>).filter(Boolean).length}/${FAMILIES.length}`;
+  }
+  return `${Math.round(v as number)}${desc.suffix ?? ""}`;
+}
+
+function fmtTime(s: number): string {
+  if (!isFinite(s) || s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+const DEMO_DURATION = 10; // synthetic timeline length for demo mode (seconds)
+
 export default function CalendarRenderer() {
   // UI state
   const [days, setDays] = useState<DayCell[]>([]);
@@ -259,14 +351,12 @@ export default function CalendarRenderer() {
   const [lightness, setLightness] = useState(0);
   const [showLabels, setShowLabels] = useState(true);
   const [playing, setPlaying] = useState(true);
-  const [collapsed, setCollapsed] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(true);
-  const [sections, setSections] = useState<Record<string, boolean>>({
-    source: true,
-    layout: true,
-    footage: false,
-    events: true,
-  });
+  const [timelineOpen, setTimelineOpen] = useState(true);
+  const [duration, setDuration] = useState(DEMO_DURATION);
+  const [lanes, setLanes] = useState<Record<string, { keys: Keyframe[] }>>(() =>
+    Object.fromEntries(LANES.map((l) => [l.id, { keys: [] as Keyframe[] }])),
+  );
+  const [selectedKf, setSelectedKf] = useState<{ lane: string; id: string } | null>(null);
 
   // Refs for the render loop (mutable, read every frame)
   const subColsRef = useRef(subCols);
@@ -283,13 +373,23 @@ export default function CalendarRenderer() {
   const playingRef = useRef(playing);
   const sourceRef = useRef<Source>("demo");
 
+  // Timeline refs read/written by the render loop (no re-render).
+  const lanesRef = useRef(lanes);
+  const durationRef = useRef(duration);
+  const currentTimeRef = useRef(0);
+  const clockRef = useRef(0); // synthetic clock seconds (demo mode)
+  const forceRenderRef = useRef(false); // draw one frame while paused (scrub)
+  const paletteInputsRef = useRef({ families, shadeCount, hueShift, lightness });
+
   // DOM refs
   const wrapRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLCanvasElement>(null);
   const hlinesRef = useRef<HTMLCanvasElement>(null);
   const vidRef = useRef<HTMLVideoElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const camStreamRef = useRef<MediaStream | null>(null);
+  const playheadElRef = useRef<HTMLDivElement>(null);
+  const timeReadoutRef = useRef<HTMLSpanElement>(null);
+  const valueSpanRefs = useRef<Record<string, HTMLSpanElement | null>>({});
 
   useEffect(() => { subColsRef.current = subCols; }, [subCols]);
   useEffect(() => { thresholdRef.current = threshold / 100; }, [threshold]);
@@ -305,6 +405,30 @@ export default function CalendarRenderer() {
   }, [families, shadeCount, hueShift, lightness]);
   useEffect(() => { showLabelsRef.current = showLabels; }, [showLabels]);
   useEffect(() => { playingRef.current = playing; }, [playing]);
+  useEffect(() => { lanesRef.current = lanes; }, [lanes]);
+  useEffect(() => { durationRef.current = duration; }, [duration]);
+  useEffect(() => {
+    paletteInputsRef.current = { families, shadeCount, hueShift, lightness };
+  }, [families, shadeCount, hueShift, lightness]);
+
+  // When keyframes change, reset every control ref to its manual value; the
+  // render loop re-drives any still-animated lanes each frame. This restores a
+  // lane's manual value after its last keyframe is removed, and repaints once.
+  useEffect(() => {
+    subColsRef.current = subCols;
+    thresholdRef.current = threshold / 100;
+    focusRef.current = focus / 100;
+    updatePeriodRef.current = updatePeriod;
+    brightnessRef.current = brightness / 100;
+    inSatRef.current = inSat / 100;
+    evSatRef.current = evSat / 100;
+    evOpacityRef.current = evOpacity / 100;
+    invertRef.current = invert;
+    showLabelsRef.current = showLabels;
+    paletteRef.current = buildPalette(families, shadeCount, hueShift, lightness / 100);
+    forceRenderRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lanes]);
 
   // Build week header on the client only (avoids SSR hydration mismatch on dates)
   useEffect(() => {
@@ -326,9 +450,8 @@ export default function CalendarRenderer() {
     setLogoDay(now.getDate());
   }, []);
 
-  // Layout: size canvases, draw hour lines, compute gutter labels
-  useEffect(() => {
-    function layout() {
+  // Layout: size canvases, draw hour lines, compute gutter labels.
+  const layout = useCallback(() => {
       const wrap = wrapRef.current;
       const stage = stageRef.current;
       const hlines = hlinesRef.current;
@@ -369,10 +492,43 @@ export default function CalendarRenderer() {
         }
         setHourLabels(labels);
       }
-    }
+  }, []);
+
+  // Re-run layout on window resize AND whenever the grid box changes size
+  // (e.g. the timeline drawer opening/closing shrinks the grid) via a
+  // ResizeObserver, coalesced to one call per frame.
+  useEffect(() => {
     layout();
+    let pending = false;
+    const schedule = () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        layout();
+      });
+    };
+    const ro = new ResizeObserver(schedule);
+    if (wrapRef.current) ro.observe(wrapRef.current);
     window.addEventListener("resize", layout);
-    return () => window.removeEventListener("resize", layout);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", layout);
+    };
+  }, [layout]);
+
+  // Timeline duration follows the loaded video's length.
+  useEffect(() => {
+    const vid = vidRef.current;
+    if (!vid) return;
+    const onMeta = () => {
+      if (isFinite(vid.duration) && vid.duration > 0) {
+        setDuration(vid.duration);
+        durationRef.current = vid.duration;
+      }
+    };
+    vid.addEventListener("loadedmetadata", onMeta);
+    return () => vid.removeEventListener("loadedmetadata", onMeta);
   }, []);
 
   // Render loop
@@ -416,21 +572,99 @@ export default function CalendarRenderer() {
       dctx.restore();
     }
 
+    // Write an animated numeric/bool lane value into its control ref.
+    function applyToRef(id: string, v: number | boolean, div: number) {
+      switch (id) {
+        case "subCols": subColsRef.current = Math.round(v as number); break;
+        case "threshold": thresholdRef.current = (v as number) / div; break;
+        case "focus": focusRef.current = (v as number) / div; break;
+        case "updatePeriod": updatePeriodRef.current = v as number; break;
+        case "brightness": brightnessRef.current = (v as number) / div; break;
+        case "inSat": inSatRef.current = (v as number) / div; break;
+        case "evSat": evSatRef.current = (v as number) / div; break;
+        case "evOpacity": evOpacityRef.current = (v as number) / div; break;
+        case "invert": invertRef.current = v as boolean; break;
+        case "showLabels": showLabelsRef.current = v as boolean; break;
+      }
+    }
+
+    // Drive every animated lane from its keyframes at time t. Palette lanes are
+    // batched into a single buildPalette call; non-animated palette inputs come
+    // from paletteInputsRef (the manual values).
+    function applyKeyframes(t: number) {
+      const lanesNow = lanesRef.current;
+      const pin = paletteInputsRef.current;
+      let palDirty = false;
+      let famEff = pin.families;
+      let shadeEff = pin.shadeCount;
+      let hueEff = pin.hueShift;
+      let lightEff = pin.lightness;
+      for (const desc of LANES) {
+        const lane = lanesNow[desc.id];
+        if (!lane || lane.keys.length === 0) continue;
+        const v = evalLane(desc, lane.keys, t);
+        if (desc.palette) {
+          palDirty = true;
+          if (desc.id === "families") famEff = v as Record<string, boolean>;
+          else if (desc.id === "shadeCount") shadeEff = v as number;
+          else if (desc.id === "hueShift") hueEff = v as number;
+          else if (desc.id === "lightness") lightEff = v as number;
+        } else {
+          applyToRef(desc.id, v as number | boolean, desc.refDivisor ?? 1);
+        }
+        const span = valueSpanRefs.current[desc.id];
+        if (span) span.textContent = fmtLaneValue(desc, v);
+      }
+      if (palDirty) paletteRef.current = buildPalette(famEff, shadeEff, hueEff, lightEff / 100);
+    }
+
     let raf = 0;
     let lastDraw = -Infinity;
+    let lastFrameMs = -1;
 
     function frame() {
       raf = requestAnimationFrame(frame);
-      if (!playingRef.current) return;
-
-      // Throttle how often the event grid recomputes/redraws. The video still
-      // advances in the background; skipping just leaves the previous frame on
-      // screen, so each set of events (and their titles) holds still long enough
-      // to read before the next update. 0 = update every frame (full speed).
       const now = performance.now();
+      const dt = lastFrameMs < 0 ? 0 : now - lastFrameMs;
+      lastFrameMs = now;
+
+      const playing = playingRef.current;
+      const forced = forceRenderRef.current;
+      if (!playing && !forced) return;
+
+      // Derive the timeline clock t. A loaded video is the master clock (it
+      // loops via vid.loop); demo mode uses a synthetic clock wrapping at the
+      // duration.
+      const dur = durationRef.current || 1;
+      let t: number;
+      if (sourceRef.current === "video" && vid!.readyState >= 2 && isFinite(vid!.duration)) {
+        t = vid!.currentTime;
+      } else {
+        if (playing) clockRef.current = (clockRef.current + dt / 1000) % dur;
+        t = clockRef.current;
+      }
+      currentTimeRef.current = t;
+
+      // Move the playhead + time readout every RAF (even when the grid draw is
+      // throttled) so the transport stays smooth. The playhead sits at the head
+      // column edge (HEAD_W) plus a fraction of the remaining track width.
+      if (playheadElRef.current) {
+        const frac = dur > 0 ? t / dur : 0;
+        playheadElRef.current.style.left = `calc(${HEAD_W}px + (100% - ${HEAD_W}px) * ${frac})`;
+      }
+      if (timeReadoutRef.current) {
+        timeReadoutRef.current.textContent = `${fmtTime(t)} / ${fmtTime(dur)}`;
+      }
+
+      // Throttle how often the event grid recomputes/redraws (forced scrubs
+      // bypass the hold). 0 = update every frame (full speed).
       const period = updatePeriodRef.current;
-      if (period > 0 && now - lastDraw < period) return;
+      if (period > 0 && !forced && now - lastDraw < period) return;
       lastDraw = now;
+      forceRenderRef.current = false;
+
+      // Drive animated controls from their keyframes at time t.
+      applyKeyframes(t);
 
       if (sourceRef.current === "demo") drawDemo();
 
@@ -670,16 +904,25 @@ export default function CalendarRenderer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function stopCam() {
-    camStreamRef.current?.getTracks().forEach((t) => t.stop());
-    camStreamRef.current = null;
-  }
+  // Delete/Backspace removes the selected keyframe (unless typing in a field).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!selectedKf) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        deleteKf(selectedKf.lane, selectedKf.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKf]);
 
   function loadFile(f: File) {
     const vid = vidRef.current;
     if (!vid) return;
-    stopCam();
-    vid.srcObject = null;
     vid.src = URL.createObjectURL(f);
     vid.loop = true;
     vid.muted = true;
@@ -688,54 +931,250 @@ export default function CalendarRenderer() {
     setPlaying(true);
   }
 
-  async function useWebcam() {
-    const vid = vidRef.current;
-    if (!vid) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      camStreamRef.current = stream;
-      vid.removeAttribute("src");
-      vid.srcObject = stream;
-      vid.play().catch(() => {});
-      sourceRef.current = "cam";
-      setPlaying(true);
-    } catch (err) {
-      alert(`Webcam unavailable: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
   function useDemo() {
-    stopCam();
     vidRef.current?.pause();
     sourceRef.current = "demo";
+    setDuration(DEMO_DURATION);
+    durationRef.current = DEMO_DURATION;
+    clockRef.current = 0;
     setPlaying(true);
   }
 
   function togglePlay() {
     const next = !playing;
     setPlaying(next);
-    if (sourceRef.current !== "demo") {
+    if (sourceRef.current === "video") {
       const vid = vidRef.current;
       if (vid) {
         if (next) vid.play().catch(() => {});
         else vid.pause();
       }
     }
+    if (!next) forceRenderRef.current = true;
   }
 
-  const toggleSection = (id: string) =>
-    setSections((s) => ({ ...s, [id]: !s[id] }));
-  const toggleFamily = (name: string) =>
-    setFamilies((m) => ({ ...m, [name]: !m[name] }));
+  // ---- Timeline transport & keyframe editing --------------------------------
 
-  function resetEventColors() {
-    setFamilies(ALL_FAMILIES_ON);
-    setShadeCount(5);
-    setHueShift(0);
-    setLightness(0);
-    setEvSat(100);
-    setEvOpacity(100);
+  function seekTo(t: number) {
+    const clamped = Math.max(0, Math.min(durationRef.current || DEMO_DURATION, t));
+    if (sourceRef.current === "video") {
+      const vid = vidRef.current;
+      if (vid) vid.currentTime = clamped;
+    } else {
+      clockRef.current = clamped;
+    }
+    currentTimeRef.current = clamped;
+    forceRenderRef.current = true;
   }
+
+  const rewind = () => seekTo(0);
+
+  function laneManualValue(id: string): LaneValue {
+    switch (id) {
+      case "subCols": return subCols;
+      case "threshold": return threshold;
+      case "focus": return focus;
+      case "updatePeriod": return updatePeriod;
+      case "brightness": return brightness;
+      case "inSat": return inSat;
+      case "evSat": return evSat;
+      case "evOpacity": return evOpacity;
+      case "hueShift": return hueShift;
+      case "lightness": return lightness;
+      case "shadeCount": return shadeCount;
+      case "invert": return invert;
+      case "showLabels": return showLabels;
+      case "families": return families;
+    }
+    return 0;
+  }
+
+  function setLaneManual(id: string, v: LaneValue) {
+    switch (id) {
+      case "subCols": setSubCols(v as number); subColsRef.current = v as number; break;
+      case "threshold": setThreshold(v as number); thresholdRef.current = (v as number) / 100; break;
+      case "focus": setFocus(v as number); focusRef.current = (v as number) / 100; break;
+      case "updatePeriod": setUpdatePeriod(v as number); updatePeriodRef.current = v as number; break;
+      case "brightness": setBrightness(v as number); brightnessRef.current = (v as number) / 100; break;
+      case "inSat": setInSat(v as number); inSatRef.current = (v as number) / 100; break;
+      case "evSat": setEvSat(v as number); evSatRef.current = (v as number) / 100; break;
+      case "evOpacity": setEvOpacity(v as number); evOpacityRef.current = (v as number) / 100; break;
+      case "invert": setInvert(v as boolean); invertRef.current = v as boolean; break;
+      case "showLabels": setShowLabels(v as boolean); showLabelsRef.current = v as boolean; break;
+      case "hueShift": setHueShift(v as number); break;
+      case "lightness": setLightness(v as number); break;
+      case "shadeCount": setShadeCount(v as number); break;
+      case "families": setFamilies(v as Record<string, boolean>); break;
+    }
+    const desc = LANE_BY_ID[id];
+    if (desc?.palette) {
+      const next = { families, shadeCount, hueShift, lightness } as {
+        families: Record<string, boolean>;
+        shadeCount: number;
+        hueShift: number;
+        lightness: number;
+      };
+      if (id === "families") next.families = v as Record<string, boolean>;
+      else if (id === "shadeCount") next.shadeCount = v as number;
+      else if (id === "hueShift") next.hueShift = v as number;
+      else if (id === "lightness") next.lightness = v as number;
+      paletteInputsRef.current = next;
+      paletteRef.current = buildPalette(next.families, next.shadeCount, next.hueShift, next.lightness / 100);
+    }
+    forceRenderRef.current = true;
+  }
+
+  // Editing a control's value. A lane is "armed" once it has any keyframes;
+  // while paused, changing an armed lane writes a keyframe at the current
+  // playhead time (creating or updating only that one), so setting a value at a
+  // new time never disturbs keyframes already placed elsewhere. Unarmed lanes
+  // just edit their plain manual value.
+  function commitLaneValue(id: string, v: LaneValue) {
+    setLaneManual(id, v);
+    const armed = (lanes[id]?.keys.length ?? 0) > 0;
+    if (armed && !playing) upsertKf(id, currentTimeRef.current, v);
+  }
+
+  // Insert a keyframe at time t, or update the one already at (about) that time.
+  function upsertKf(lane: string, t: number, value: LaneValue) {
+    const v: LaneValue =
+      LANE_BY_ID[lane].kind === "families"
+        ? { ...(value as Record<string, boolean>) }
+        : value;
+    setLanes((prev) => {
+      const keys = prev[lane].keys.slice();
+      const i = keys.findIndex((k) => Math.abs(k.t - t) < 0.03);
+      if (i >= 0) keys[i] = { ...keys[i], value: v };
+      else keys.push({ id: uid(), t, value: v });
+      keys.sort((a, b) => a.t - b.t);
+      return { ...prev, [lane]: { keys } };
+    });
+    forceRenderRef.current = true;
+  }
+
+  // The "◆" button keys the lane's current value at the playhead.
+  function addKf(lane: string) {
+    upsertKf(lane, currentTimeRef.current, laneManualValue(lane));
+  }
+
+  function deleteKf(lane: string, kid: string) {
+    setLanes((prev) => ({
+      ...prev,
+      [lane]: { keys: prev[lane].keys.filter((k) => k.id !== kid) },
+    }));
+    setSelectedKf((sel) => (sel && sel.lane === lane && sel.id === kid ? null : sel));
+  }
+
+  function moveKf(lane: string, kid: string, t: number) {
+    const clamped = Math.max(0, Math.min(duration, t));
+    setLanes((prev) => ({
+      ...prev,
+      [lane]: {
+        keys: prev[lane].keys
+          .map((k) => (k.id === kid ? { ...k, t: clamped } : k))
+          .sort((a, b) => a.t - b.t),
+      },
+    }));
+  }
+
+  function toggleFamily(name: string) {
+    const cur = laneManualValue("families") as Record<string, boolean>;
+    commitLaneValue("families", { ...cur, [name]: !cur[name] });
+  }
+
+  function setFamiliesAll(on: boolean) {
+    commitLaneValue("families", Object.fromEntries(FAMILIES.map((f) => [f.name, on])));
+  }
+
+  // ---- Pointer interactions -------------------------------------------------
+
+  function timeFromClientX(rect: DOMRect, clientX: number) {
+    return ((clientX - rect.left) / (rect.width || 1)) * duration;
+  }
+
+  // Click/drag on the ruler to scrub.
+  function onRulerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    seekTo(timeFromClientX(rect, e.clientX));
+    const move = (ev: PointerEvent) => seekTo(timeFromClientX(rect, ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // Click empty track area to scrub to that time.
+  function onTrackDown(e: ReactPointerEvent<HTMLDivElement>) {
+    const rect = e.currentTarget.getBoundingClientRect();
+    seekTo(timeFromClientX(rect, e.clientX));
+  }
+
+  // Select a keyframe and drag it in time.
+  function onKfDown(e: ReactPointerEvent<HTMLButtonElement>, lane: string, kid: string) {
+    e.stopPropagation();
+    setSelectedKf({ lane, id: kid });
+    const track = e.currentTarget.parentElement as HTMLElement | null;
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    const move = (ev: PointerEvent) => moveKf(lane, kid, timeFromClientX(rect, ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function renderLaneControl(desc: LaneDesc, editVal: LaneValue) {
+    if (desc.kind === "number") {
+      return (
+        <input
+          type="range"
+          min={desc.min}
+          max={desc.max}
+          step={desc.step}
+          value={editVal as number}
+          onChange={(e) => commitLaneValue(desc.id, +e.target.value)}
+        />
+      );
+    }
+    if (desc.kind === "bool") {
+      return (
+        <label className="tl-toggle">
+          <input
+            type="checkbox"
+            checked={editVal as boolean}
+            onChange={(e) => commitLaneValue(desc.id, e.target.checked)}
+          />
+          <span>{(editVal as boolean) ? "on" : "off"}</span>
+        </label>
+      );
+    }
+    const fam = editVal as Record<string, boolean>;
+    return (
+      <div className="tl-fam">
+        {FAMILIES.map((f) => (
+          <button
+            key={f.name}
+            className={`tl-chip${fam[f.name] ? " on" : ""}`}
+            style={{ background: fam[f.name] ? f.hues[0] : undefined }}
+            onClick={() => toggleFamily(f.name)}
+            title={f.name}
+          />
+        ))}
+        <button className="tl-famall" onClick={() => setFamiliesAll(true)}>
+          All
+        </button>
+        <button className="tl-famall" onClick={() => setFamiliesAll(false)}>
+          None
+        </button>
+      </div>
+    );
+  }
+
+  const rulerTicks = Array.from({ length: 7 }, (_, i) => i / 6);
 
   return (
     <div className="shell">
@@ -773,11 +1212,11 @@ export default function CalendarRenderer() {
           Week <span style={{ fontSize: 10 }}>▾</span>
         </div>
         <button
-          className={`avatar${menuOpen ? " active" : ""}`}
-          onClick={() => setMenuOpen((o) => !o)}
-          aria-label={menuOpen ? "Hide controls" : "Show controls"}
-          aria-pressed={menuOpen}
-          title="Toggle controls"
+          className={`avatar${timelineOpen ? " active" : ""}`}
+          onClick={() => setTimelineOpen((o) => !o)}
+          aria-label={timelineOpen ? "Hide timeline" : "Show timeline"}
+          aria-pressed={timelineOpen}
+          title="Toggle timeline"
         >
           M
         </button>
@@ -814,282 +1253,113 @@ export default function CalendarRenderer() {
         </div>
       </div>
 
-      {/* Control panel */}
-      {menuOpen && (
-      <div className={`panel${collapsed ? " collapsed" : ""}`}>
-        <h3>
-          Controls
-          <span className="hgroup">
-            <button className="min" onClick={() => setCollapsed(!collapsed)} aria-label="Minimize">
-              {collapsed ? "+" : "–"}
-            </button>
-            <button className="min" onClick={() => setMenuOpen(false)} aria-label="Close controls">
-              ×
-            </button>
+      {/* Timeline drawer */}
+      <div className={`timeline${timelineOpen ? "" : " closed"}`}>
+        <div className="tl-transport">
+          <button className="tl-icon" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"}>
+            {playing ? "❚❚" : "▶"}
+          </button>
+          <button className="tl-icon" onClick={rewind} aria-label="Rewind">
+            ⏮
+          </button>
+          <span className="tl-time" ref={timeReadoutRef}>
+            0:00 / {fmtTime(duration)}
           </span>
-        </h3>
-        <div className="content">
-          {/* Source */}
-          <button className="sec" onClick={() => toggleSection("source")}>
-            <span>Source</span>
-            <span>{sections.source ? "–" : "+"}</span>
+          <div className="tl-spacer" />
+          <button className="pbtn primary" onClick={() => fileRef.current?.click()}>
+            Upload
           </button>
-          {sections.source && (
-            <div className="secbody">
-              <div className="btnrow">
-                <button className="pbtn primary" onClick={() => fileRef.current?.click()}>
-                  Upload video
-                </button>
-                <button className="pbtn" onClick={useWebcam}>
-                  Webcam
-                </button>
-                <button className="pbtn" onClick={useDemo}>
-                  Demo
-                </button>
-                <button className="pbtn" onClick={togglePlay}>
-                  {playing ? "Pause" : "Play"}
-                </button>
-              </div>
-              <div className="hint">
-                Drop a video file anywhere on the page. Bright pixels become events, dark
-                pixels stay empty.
-              </div>
-            </div>
-          )}
-
-          {/* Layout */}
-          <button className="sec" onClick={() => toggleSection("layout")}>
-            <span>Layout</span>
-            <span>{sections.layout ? "–" : "+"}</span>
+          <button className="pbtn" onClick={useDemo}>
+            Demo
           </button>
-          {sections.layout && (
-            <div className="secbody">
-              <div className="ctl">
-                <label>
-                  Resolution <span>{subCols === MIN_RES ? "1/day" : `${subCols}/day`}</span>
-                </label>
-                <input
-                  type="range"
-                  min={MIN_RES}
-                  max={16}
-                  value={subCols}
-                  onChange={(e) => setSubCols(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Darkness cutoff <span>{threshold}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={60}
-                  value={threshold}
-                  onChange={(e) => setThreshold(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Focal point{" "}
-                  <span>
-                    {focus === 50
-                      ? "Center"
-                      : focus < 50
-                        ? `${50 - focus}% up`
-                        : `${focus - 50}% down`}
-                  </span>
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={focus}
-                  onChange={(e) => setFocus(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Event update{" "}
-                  <span>{updatePeriod === 0 ? "Full" : `hold ${updatePeriod}ms`}</span>
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={200}
-                  step={10}
-                  value={updatePeriod}
-                  onChange={(e) => setUpdatePeriod(+e.target.value)}
-                />
-              </div>
-              <div className="chk">
-                <input
-                  type="checkbox"
-                  id="labels"
-                  checked={showLabels}
-                  onChange={(e) => setShowLabels(e.target.checked)}
-                />
-                <label htmlFor="labels">Event titles on bright blocks</label>
-              </div>
-            </div>
-          )}
-
-          {/* Footage color */}
-          <button className="sec" onClick={() => toggleSection("footage")}>
-            <span>Footage color</span>
-            <span>{sections.footage ? "–" : "+"}</span>
+          <button
+            className="tl-icon"
+            onClick={() => setTimelineOpen(false)}
+            aria-label="Close timeline"
+          >
+            ×
           </button>
-          {sections.footage && (
-            <div className="secbody">
-              <div className="chk">
-                <input
-                  type="checkbox"
-                  id="invert"
-                  checked={invert}
-                  onChange={(e) => setInvert(e.target.checked)}
-                />
-                <label htmlFor="invert">Invert colors</label>
-              </div>
-              <div className="ctl">
-                <label>
-                  Brightness <span>{brightness}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={200}
-                  value={brightness}
-                  onChange={(e) => setBrightness(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Saturation <span>{inSat}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={200}
-                  value={inSat}
-                  onChange={(e) => setInSat(+e.target.value)}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Event color */}
-          <button className="sec" onClick={() => toggleSection("events")}>
-            <span>Event color</span>
-            <span>{sections.events ? "–" : "+"}</span>
-          </button>
-          {sections.events && (
-            <div className="secbody">
-              <label className="grouplabel">
-                Palette families
-                <span className="linkbtns">
-                  <button onClick={() => setFamilies(ALL_FAMILIES_ON)}>All</button>
-                  <button
-                    onClick={() =>
-                      setFamilies(Object.fromEntries(FAMILIES.map((f) => [f.name, false])))
-                    }
-                  >
-                    None
-                  </button>
-                </span>
-              </label>
-              <div className="families">
-                {FAMILIES.map((f) => (
-                  <button
-                    key={f.name}
-                    className={`chip${families[f.name] ? " on" : ""}`}
-                    onClick={() => toggleFamily(f.name)}
-                  >
-                    <span className="dot" style={{ background: f.hues[0] }} />
-                    {f.name}
-                  </button>
-                ))}
-              </div>
-              <div className="ctl">
-                <label>
-                  Hue shift <span>{hueShift}°</span>
-                </label>
-                <input
-                  type="range"
-                  min={-180}
-                  max={180}
-                  value={hueShift}
-                  onChange={(e) => setHueShift(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Lightness{" "}
-                  <span>
-                    {lightness === 0 ? "Neutral" : lightness > 0 ? `+${lightness}` : lightness}
-                  </span>
-                </label>
-                <input
-                  type="range"
-                  min={-50}
-                  max={50}
-                  value={lightness}
-                  onChange={(e) => setLightness(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Shade richness <span>{shadeCount}/hue</span>
-                </label>
-                <input
-                  type="range"
-                  min={1}
-                  max={7}
-                  value={shadeCount}
-                  onChange={(e) => setShadeCount(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Vividness <span>{evSat}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={0}
-                  max={200}
-                  value={evSat}
-                  onChange={(e) => setEvSat(+e.target.value)}
-                />
-              </div>
-              <div className="ctl">
-                <label>
-                  Opacity <span>{evOpacity}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={20}
-                  max={100}
-                  value={evOpacity}
-                  onChange={(e) => setEvOpacity(+e.target.value)}
-                />
-              </div>
-              <button className="pbtn resetbtn" onClick={resetEventColors}>
-                Reset event colors
-              </button>
-            </div>
-          )}
-
-          <input
-            ref={fileRef}
-            type="file"
-            accept="video/*"
-            className="hiddenInput"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) loadFile(f);
-            }}
-          />
         </div>
+
+        <div className="tl-scroll">
+          <div className="tl-ruler">
+            <div className="tl-ruler-head">Timeline</div>
+            <div className="tl-ruler-track" onPointerDown={onRulerDown}>
+              {rulerTicks.map((f, i) => (
+                <div key={i} className="tl-tick" style={{ left: `${f * 100}%` }}>
+                  <span>{fmtTime(f * duration)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="tl-lanes">
+            {LANES.map((desc) => {
+              const lane = lanes[desc.id];
+              const editVal = laneManualValue(desc.id);
+              const selOnLane = selectedKf?.lane === desc.id;
+              return (
+                <div className={`tl-lane${selOnLane ? " sel" : ""}`} key={desc.id}>
+                  <div className="tl-head">
+                    <div className="tl-headtop">
+                      <span className="tl-name">{desc.label}</span>
+                      <span
+                        className="tl-val"
+                        ref={(el) => {
+                          valueSpanRefs.current[desc.id] = el;
+                        }}
+                      >
+                        {fmtLaneValue(desc, editVal)}
+                      </span>
+                      <button
+                        className="tl-add"
+                        onClick={() => addKf(desc.id)}
+                        title="Add keyframe at playhead"
+                      >
+                        ◆
+                      </button>
+                    </div>
+                    <div className="tl-ctl">{renderLaneControl(desc, editVal)}</div>
+                  </div>
+                  <div className="tl-track" onPointerDown={onTrackDown}>
+                    {lane.keys.map((k) => (
+                      <button
+                        key={k.id}
+                        className={`tl-kf${
+                          selectedKf?.lane === desc.id && selectedKf.id === k.id ? " sel" : ""
+                        }`}
+                        style={{ left: `${(k.t / (duration || 1)) * 100}%` }}
+                        onPointerDown={(e) => onKfDown(e, desc.id, k.id)}
+                        onDoubleClick={() => {
+                          seekTo(k.t);
+                          setLaneManual(desc.id, k.value);
+                          setSelectedKf({ lane: desc.id, id: k.id });
+                        }}
+                      >
+                        <span className="tl-kf-dot" />
+                        <span className="tl-kf-tip">{fmtLaneValue(desc, k.value)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="tl-playhead" ref={playheadElRef} />
+        </div>
+
+        <input
+          ref={fileRef}
+          type="file"
+          accept="video/*"
+          className="hiddenInput"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) loadFile(f);
+          }}
+        />
       </div>
-      )}
 
       <video ref={vidRef} muted loop playsInline style={{ display: "none" }} />
     </div>
