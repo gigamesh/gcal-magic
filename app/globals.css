@@ -62,7 +62,10 @@ body {
   width: 34px; height: 34px; border-radius: 50%; background: #7b1fa2; color: #fff;
   display: flex; align-items: center; justify-content: center;
   font-size: 14px; font-weight: 500; margin-left: 4px;
+  border: none; cursor: pointer; padding: 0;
 }
+.avatar:hover { box-shadow: 0 0 0 2px rgba(123, 31, 162, 0.35); }
+.avatar.active { box-shadow: 0 0 0 2px var(--blue); }
 
 /* ---------- Day header row ---------- */
 .dayhead { display: flex; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
@@ -104,11 +107,43 @@ body {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px;
   color: #9aa0a6; margin: 12px 0 6px; border-top: 1px solid #3c4043; padding-top: 10px;
 }
+.sec {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  background: none; border: none; border-top: 1px solid #3c4043;
+  color: #e8eaed; font-size: 11px; font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.6px; padding: 10px 0 6px; margin-top: 6px; cursor: pointer;
+}
+.sec:first-of-type { border-top: none; margin-top: 0; }
+.sec span:last-child { color: #9aa0a6; font-size: 14px; }
+.secbody { margin-bottom: 4px; }
+.grouplabel {
+  display: flex; justify-content: space-between; align-items: center;
+  color: #bdc1c6; font-size: 11px; margin-bottom: 6px;
+}
+.linkbtns { display: flex; gap: 8px; }
+.linkbtns button {
+  background: none; border: none; color: var(--blue); font-size: 11px; cursor: pointer; padding: 0;
+}
+.families { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+.chip {
+  display: flex; align-items: center; gap: 5px;
+  background: #3c4043; color: #9aa0a6; border: 1px solid transparent;
+  border-radius: 12px; padding: 4px 9px 4px 6px; font-size: 11px; cursor: pointer;
+}
+.chip.on { color: #e8eaed; border-color: #5f6368; background: #2d3033; }
+.chip .dot { width: 9px; height: 9px; border-radius: 50%; opacity: 0.35; }
+.chip.on .dot { opacity: 1; }
+.resetbtn { width: 100%; margin-top: 4px; }
 .panel h3 {
   font-size: 13px; font-weight: 500; margin-bottom: 10px; color: #fff;
   display: flex; justify-content: space-between; align-items: center;
 }
-.panel .min { cursor: pointer; color: #9aa0a6; background: none; border: none; font-size: 16px; }
+.panel .hgroup { display: flex; align-items: center; gap: 4px; }
+.panel .min {
+  cursor: pointer; color: #9aa0a6; background: none; border: none; font-size: 16px;
+  width: 22px; height: 22px; border-radius: 4px; line-height: 1;
+}
+.panel .min:hover { background: #3c4043; color: #e8eaed; }
 .btnrow { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
 .pbtn {
   background: #3c4043; color: #e8eaed; border: none; border-radius: 6px;

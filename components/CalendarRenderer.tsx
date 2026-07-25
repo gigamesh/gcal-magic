@@ -2,20 +2,27 @@
 
 import { useEffect, useRef, useState } from "react";
 
-// Base Google Calendar event hues. Each is expanded into several shades below
-// so nearest-color matching has more tonal range to hit — closer to the video.
-const BASE_HUES = [
-  "#D50000", "#E67C73", "#F4511E", "#F6BF26", "#33B679", "#0B8043",
-  "#039BE5", "#3F51B5", "#7986CB", "#8E24AA", "#616161",
+// Event hues grouped into color families — the classic Google Calendar palette
+// plus vivid/teal/cyan additions to cover the wheel. Families can be toggled on
+// and off from the control panel, and each enabled hue is expanded into several
+// shades so nearest-color matching has both a wide range of hues and tonal depth
+// to hit — keeping the calendar close to the video.
+const FAMILIES: { name: string; hues: string[] }[] = [
+  { name: "Reds", hues: ["#D50000", "#F83A22", "#E67C73", "#D06B64", "#F691B2"] },
+  { name: "Oranges", hues: ["#F4511E", "#FF7537", "#FFAD46"] },
+  { name: "Yellows", hues: ["#F6BF26", "#FAD165", "#FBE983"] },
+  { name: "Greens", hues: ["#33B679", "#0B8043", "#16A765", "#42D692", "#7BD148", "#B3DC6C"] },
+  { name: "Teals", hues: ["#00897B", "#009688", "#4DD0E1", "#9FE1E7"] },
+  { name: "Blues", hues: ["#039BE5", "#4986E7", "#3F51B5", "#7986CB"] },
+  { name: "Purples", hues: ["#8E24AA", "#A47AE2", "#CD74E6"] },
+  { name: "Neutrals", hues: ["#AC725E", "#616161", "#C2C2C2"] },
 ];
 
-// Blend amounts per hue: negative darkens toward black, positive lightens
-// toward white, 0 keeps the iconic base color.
-const SHADES = [-0.42, -0.22, 0, 0.22, 0.44];
+type PaletteColor = { hex: string; r: number; g: number; b: number; text: string };
 
 const clamp255 = (v: number) => (v < 0 ? 0 : v > 255 ? 255 : Math.round(v));
 
-function makeColor(r: number, g: number, b: number) {
+function makeColor(r: number, g: number, b: number): PaletteColor {
   r = clamp255(r);
   g = clamp255(g);
   b = clamp255(b);
@@ -25,16 +32,88 @@ function makeColor(r: number, g: number, b: number) {
   return { hex, r, g, b, text: luma > 0.6 ? "#3c4043" : "#fff" };
 }
 
-const PALETTE = BASE_HUES.flatMap((hex) => {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return SHADES.map((s) => {
-    const t = Math.abs(s);
-    const target = s < 0 ? 0 : 255;
-    return makeColor(r + (target - r) * t, g + (target - g) * t, b + (target - b) * t);
-  });
-});
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  const d = max - min;
+  if (d !== 0) {
+    s = d / (1 - Math.abs(2 * l - 1));
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return [h, s, l];
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
+// Spread of blend amounts across `count` shades (negative darkens toward black,
+// positive lightens toward white), biased by lightness in [-0.5, 0.5].
+function shadeAmounts(count: number, lightnessBias: number): number[] {
+  if (count <= 1) return [Math.max(-0.85, Math.min(0.85, lightnessBias))];
+  const spread = 0.44;
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    const t = -spread + 2 * spread * (i / (count - 1));
+    out.push(Math.max(-0.85, Math.min(0.85, t + lightnessBias)));
+  }
+  return out;
+}
+
+// Build the working palette from the current event-color controls.
+function buildPalette(
+  enabled: Record<string, boolean>,
+  shadeCount: number,
+  hueShift: number,
+  lightnessBias: number,
+): PaletteColor[] {
+  const amounts = shadeAmounts(shadeCount, lightnessBias);
+  const out: PaletteColor[] = [];
+  for (const fam of FAMILIES) {
+    if (!enabled[fam.name]) continue;
+    for (const hex of fam.hues) {
+      let r = parseInt(hex.slice(1, 3), 16);
+      let g = parseInt(hex.slice(3, 5), 16);
+      let b = parseInt(hex.slice(5, 7), 16);
+      if (hueShift !== 0) {
+        const [h, s, l] = rgbToHsl(r, g, b);
+        [r, g, b] = hslToRgb((h + hueShift + 360) % 360, s, l);
+      }
+      for (const a of amounts) {
+        const t = Math.abs(a);
+        const target = a < 0 ? 0 : 255;
+        out.push(makeColor(r + (target - r) * t, g + (target - g) * t, b + (target - b) * t));
+      }
+    }
+  }
+  return out;
+}
+
+const ALL_FAMILIES_ON: Record<string, boolean> = Object.fromEntries(
+  FAMILIES.map((f) => [f.name, true]),
+);
 
 // Lowest resolution: one full-width event per day column, every one titled.
 const MIN_RES = 4;
@@ -95,11 +174,11 @@ interface DayCell {
   today: boolean;
 }
 
-function nearestIdx(r: number, g: number, b: number) {
+function nearestIdx(palette: PaletteColor[], r: number, g: number, b: number) {
   let best = 0;
   let bd = Infinity;
-  for (let i = 0; i < PALETTE.length; i++) {
-    const p = PALETTE[i];
+  for (let i = 0; i < palette.length; i++) {
+    const p = palette[i];
     const d = (p.r - r) ** 2 + (p.g - g) ** 2 + (p.b - b) ** 2;
     if (d < bd) {
       bd = d;
@@ -111,12 +190,23 @@ function nearestIdx(r: number, g: number, b: number) {
 
 // Push an event color toward gray (sf<1) or over-saturate it (sf>1) around its
 // own luminance, for the event color control.
-function satColor(color: { r: number; g: number; b: number }, sf: number) {
+function satColor(color: PaletteColor, sf: number) {
   const gray = 0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b;
   const r = clamp255(gray + (color.r - gray) * sf);
   const g = clamp255(gray + (color.g - gray) * sf);
   const b = clamp255(gray + (color.b - gray) * sf);
   return `rgb(${r},${g},${b})`;
+}
+
+// Weighted target height (in rows) for a vertical merge, from a hash in [0,1).
+// Most events stay short, but 3- and 4-row blocks show up often enough to vary
+// the shapes. It's only a ceiling — a merge still stops early if the rows below
+// aren't an identical color.
+function targetRows(h: number) {
+  if (h < 0.45) return 1;
+  if (h < 0.7) return 2;
+  if (h < 0.88) return 3;
+  return 4;
 }
 
 // Stable pseudo-random in [0,1) from a grid position, so probabilistic merges
@@ -157,24 +247,38 @@ export default function CalendarRenderer() {
   const [subCols, setSubCols] = useState(10);
   const [threshold, setThreshold] = useState(12);
   const [focus, setFocus] = useState(50);
+  const [updatePeriod, setUpdatePeriod] = useState(0);
   const [invert, setInvert] = useState(false);
   const [brightness, setBrightness] = useState(100);
   const [inSat, setInSat] = useState(100);
   const [evSat, setEvSat] = useState(100);
   const [evOpacity, setEvOpacity] = useState(100);
+  const [families, setFamilies] = useState<Record<string, boolean>>(ALL_FAMILIES_ON);
+  const [shadeCount, setShadeCount] = useState(5);
+  const [hueShift, setHueShift] = useState(0);
+  const [lightness, setLightness] = useState(0);
   const [showLabels, setShowLabels] = useState(true);
   const [playing, setPlaying] = useState(true);
   const [collapsed, setCollapsed] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(true);
+  const [sections, setSections] = useState<Record<string, boolean>>({
+    source: true,
+    layout: true,
+    footage: false,
+    events: true,
+  });
 
   // Refs for the render loop (mutable, read every frame)
   const subColsRef = useRef(subCols);
   const thresholdRef = useRef(threshold / 100);
   const focusRef = useRef(focus / 100);
+  const updatePeriodRef = useRef(updatePeriod);
   const invertRef = useRef(invert);
   const brightnessRef = useRef(brightness / 100);
   const inSatRef = useRef(inSat / 100);
   const evSatRef = useRef(evSat / 100);
   const evOpacityRef = useRef(evOpacity / 100);
+  const paletteRef = useRef<PaletteColor[]>(buildPalette(ALL_FAMILIES_ON, 5, 0, 0));
   const showLabelsRef = useRef(showLabels);
   const playingRef = useRef(playing);
   const sourceRef = useRef<Source>("demo");
@@ -190,11 +294,15 @@ export default function CalendarRenderer() {
   useEffect(() => { subColsRef.current = subCols; }, [subCols]);
   useEffect(() => { thresholdRef.current = threshold / 100; }, [threshold]);
   useEffect(() => { focusRef.current = focus / 100; }, [focus]);
+  useEffect(() => { updatePeriodRef.current = updatePeriod; }, [updatePeriod]);
   useEffect(() => { invertRef.current = invert; }, [invert]);
   useEffect(() => { brightnessRef.current = brightness / 100; }, [brightness]);
   useEffect(() => { inSatRef.current = inSat / 100; }, [inSat]);
   useEffect(() => { evSatRef.current = evSat / 100; }, [evSat]);
   useEffect(() => { evOpacityRef.current = evOpacity / 100; }, [evOpacity]);
+  useEffect(() => {
+    paletteRef.current = buildPalette(families, shadeCount, hueShift, lightness / 100);
+  }, [families, shadeCount, hueShift, lightness]);
   useEffect(() => { showLabelsRef.current = showLabels; }, [showLabels]);
   useEffect(() => { playingRef.current = playing; }, [playing]);
 
@@ -309,10 +417,21 @@ export default function CalendarRenderer() {
     }
 
     let raf = 0;
+    let lastDraw = -Infinity;
 
     function frame() {
       raf = requestAnimationFrame(frame);
       if (!playingRef.current) return;
+
+      // Throttle how often the event grid recomputes/redraws. The video still
+      // advances in the background; skipping just leaves the previous frame on
+      // screen, so each set of events (and their titles) holds still long enough
+      // to read before the next update. 0 = update every frame (full speed).
+      const now = performance.now();
+      const period = updatePeriodRef.current;
+      if (period > 0 && now - lastDraw < period) return;
+      lastDraw = now;
+
       if (sourceRef.current === "demo") drawDemo();
 
       const src =
@@ -376,6 +495,7 @@ export default function CalendarRenderer() {
       const inSat = inSatRef.current;
       const evSat = evSatRef.current;
       const evOp = evOpacityRef.current;
+      const palette = paletteRef.current;
       ctx!.font = atLowest ? "500 11px Roboto, Arial" : "500 8px Roboto, Arial";
       ctx!.textBaseline = "top";
 
@@ -412,11 +532,11 @@ export default function CalendarRenderer() {
           b = clamp255(b);
           const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
           const k = y * cols + x;
-          if (lum < thr) {
+          if (lum < thr || palette.length === 0) {
             ci[k] = -1;
             continue;
           }
-          ci[k] = nearestIdx(r, g, b);
+          ci[k] = nearestIdx(palette, r, g, b);
           al[k] = 0.35 + 0.65 * Math.min(1, (lum - thr) / (1 - thr || 1));
           lm[k] = lum;
         }
@@ -428,7 +548,7 @@ export default function CalendarRenderer() {
         cy: number,
         cw: number,
         ch: number,
-        color: (typeof PALETTE)[number],
+        color: PaletteColor,
         alpha: number,
         lumMax: number,
       ) {
@@ -451,25 +571,31 @@ export default function CalendarRenderer() {
             lumMax > 0.55 &&
             w >= 32 &&
             h >= 9 &&
-            hash2(cx * 2 + 1, cy) < 0.16);
+            // Always title multi-row blocks; single cells stay sparse.
+            (ch >= 2 || hash2(cx * 2 + 1, cy) < 0.16));
         if (titled) {
           const label = TITLES[(cx * 3 + cy * 7) % TITLES.length];
+          // Scale the title to the event height so taller merged blocks read
+          // more easily.
+          const fontPx = Math.round(Math.max(atLowest ? 11 : 8, Math.min(22, h * 0.55)));
           ctx!.save();
           ctx!.beginPath();
           ctx!.rect(px, py, w, h);
           ctx!.clip();
+          ctx!.font = `500 ${fontPx}px Roboto, Arial`;
           ctx!.globalAlpha = 0.95;
           ctx!.fillStyle = atLowest ? color.text : "#fff";
-          const ty = atLowest ? py + Math.max(1, (h - 11) / 2) : py + 1;
+          const ty = py + Math.max(1, (h - fontPx) / 2);
           ctx!.fillText(label, px + 4, ty);
           ctx!.restore();
         }
       }
 
       // Merge same-color cells into larger events: first into horizontal runs
-      // (so a single-color row fills its full width), then absorb the run
-      // directly below when it matches — 25% of the time — for taller blocks.
-      // Only genuinely identical cells merge, so video detail is never lost.
+      // (so a single-color row fills its full width), then absorb matching runs
+      // directly below — up to a weighted target of 1–4 rows — for taller,
+      // varied blocks. Only genuinely identical cells merge, so video detail is
+      // never lost.
       const consumed = new Uint8Array(cols * rows);
       for (let y = 0; y < rows; y++) {
         let x = 0;
@@ -499,11 +625,12 @@ export default function CalendarRenderer() {
             if (lm[kk] > lumMax) lumMax = lm[kk];
           }
 
+          const maxRows = targetRows(hash2(x + 1, y));
           let y1 = y + 1;
           while (
             y1 < rows &&
-            runMatches(ci, cols, perDay, y1, x, x1, idx) &&
-            hash2(x + 1, y1) < 0.25
+            y1 - y < maxRows &&
+            runMatches(ci, cols, perDay, y1, x, x1, idx)
           ) {
             for (let xx = x; xx < x1; xx++) {
               const kk = y1 * cols + xx;
@@ -515,7 +642,7 @@ export default function CalendarRenderer() {
             y1++;
           }
 
-          drawEvent(x, y, x1 - x, y1 - y, PALETTE[idx], alphaSum / n, lumMax);
+          drawEvent(x, y, x1 - x, y1 - y, palette[idx], alphaSum / n, lumMax);
           x = x1;
         }
       }
@@ -596,6 +723,20 @@ export default function CalendarRenderer() {
     }
   }
 
+  const toggleSection = (id: string) =>
+    setSections((s) => ({ ...s, [id]: !s[id] }));
+  const toggleFamily = (name: string) =>
+    setFamilies((m) => ({ ...m, [name]: !m[name] }));
+
+  function resetEventColors() {
+    setFamilies(ALL_FAMILIES_ON);
+    setShadeCount(5);
+    setHueShift(0);
+    setLightness(0);
+    setEvSat(100);
+    setEvOpacity(100);
+  }
+
   return (
     <div className="shell">
       {/* App bar */}
@@ -631,7 +772,15 @@ export default function CalendarRenderer() {
         <div className="view-dd">
           Week <span style={{ fontSize: 10 }}>▾</span>
         </div>
-        <div className="avatar">M</div>
+        <button
+          className={`avatar${menuOpen ? " active" : ""}`}
+          onClick={() => setMenuOpen((o) => !o)}
+          aria-label={menuOpen ? "Hide controls" : "Show controls"}
+          aria-pressed={menuOpen}
+          title="Toggle controls"
+        >
+          M
+        </button>
       </div>
 
       {/* Day headers */}
@@ -666,141 +815,268 @@ export default function CalendarRenderer() {
       </div>
 
       {/* Control panel */}
+      {menuOpen && (
       <div className={`panel${collapsed ? " collapsed" : ""}`}>
         <h3>
-          Video source
-          <button className="min" onClick={() => setCollapsed(!collapsed)}>
-            {collapsed ? "+" : "–"}
-          </button>
+          Controls
+          <span className="hgroup">
+            <button className="min" onClick={() => setCollapsed(!collapsed)} aria-label="Minimize">
+              {collapsed ? "+" : "–"}
+            </button>
+            <button className="min" onClick={() => setMenuOpen(false)} aria-label="Close controls">
+              ×
+            </button>
+          </span>
         </h3>
         <div className="content">
-          <div className="btnrow">
-            <button className="pbtn primary" onClick={() => fileRef.current?.click()}>
-              Upload video
-            </button>
-            <button className="pbtn" onClick={useWebcam}>
-              Webcam
-            </button>
-            <button className="pbtn" onClick={useDemo}>
-              Demo
-            </button>
-            <button className="pbtn" onClick={togglePlay}>
-              {playing ? "Pause" : "Play"}
-            </button>
-          </div>
-          <div className="ctl">
-            <label>
-              Resolution <span>{subCols}/day</span>
-            </label>
-            <input
-              type="range"
-              min={MIN_RES}
-              max={16}
-              value={subCols}
-              onChange={(e) => setSubCols(+e.target.value)}
-            />
-          </div>
-          <div className="ctl">
-            <label>
-              Darkness cutoff <span>{threshold}%</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={60}
-              value={threshold}
-              onChange={(e) => setThreshold(+e.target.value)}
-            />
-          </div>
-          <div className="ctl">
-            <label>
-              Focal point{" "}
-              <span>
-                {focus === 50 ? "Center" : focus < 50 ? `${50 - focus}% up` : `${focus - 50}% down`}
-              </span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={focus}
-              onChange={(e) => setFocus(+e.target.value)}
-            />
-          </div>
-          <div className="seclabel">Footage color</div>
-          <div className="chk">
-            <input
-              type="checkbox"
-              id="invert"
-              checked={invert}
-              onChange={(e) => setInvert(e.target.checked)}
-            />
-            <label htmlFor="invert">Invert colors</label>
-          </div>
-          <div className="ctl">
-            <label>
-              Brightness <span>{brightness}%</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={200}
-              value={brightness}
-              onChange={(e) => setBrightness(+e.target.value)}
-            />
-          </div>
-          <div className="ctl">
-            <label>
-              Saturation <span>{inSat}%</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={200}
-              value={inSat}
-              onChange={(e) => setInSat(+e.target.value)}
-            />
-          </div>
+          {/* Source */}
+          <button className="sec" onClick={() => toggleSection("source")}>
+            <span>Source</span>
+            <span>{sections.source ? "–" : "+"}</span>
+          </button>
+          {sections.source && (
+            <div className="secbody">
+              <div className="btnrow">
+                <button className="pbtn primary" onClick={() => fileRef.current?.click()}>
+                  Upload video
+                </button>
+                <button className="pbtn" onClick={useWebcam}>
+                  Webcam
+                </button>
+                <button className="pbtn" onClick={useDemo}>
+                  Demo
+                </button>
+                <button className="pbtn" onClick={togglePlay}>
+                  {playing ? "Pause" : "Play"}
+                </button>
+              </div>
+              <div className="hint">
+                Drop a video file anywhere on the page. Bright pixels become events, dark
+                pixels stay empty.
+              </div>
+            </div>
+          )}
 
-          <div className="seclabel">Event color</div>
-          <div className="ctl">
-            <label>
-              Vividness <span>{evSat}%</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={200}
-              value={evSat}
-              onChange={(e) => setEvSat(+e.target.value)}
-            />
-          </div>
-          <div className="ctl">
-            <label>
-              Opacity <span>{evOpacity}%</span>
-            </label>
-            <input
-              type="range"
-              min={20}
-              max={100}
-              value={evOpacity}
-              onChange={(e) => setEvOpacity(+e.target.value)}
-            />
-          </div>
+          {/* Layout */}
+          <button className="sec" onClick={() => toggleSection("layout")}>
+            <span>Layout</span>
+            <span>{sections.layout ? "–" : "+"}</span>
+          </button>
+          {sections.layout && (
+            <div className="secbody">
+              <div className="ctl">
+                <label>
+                  Resolution <span>{subCols === MIN_RES ? "1/day" : `${subCols}/day`}</span>
+                </label>
+                <input
+                  type="range"
+                  min={MIN_RES}
+                  max={16}
+                  value={subCols}
+                  onChange={(e) => setSubCols(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Darkness cutoff <span>{threshold}%</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={60}
+                  value={threshold}
+                  onChange={(e) => setThreshold(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Focal point{" "}
+                  <span>
+                    {focus === 50
+                      ? "Center"
+                      : focus < 50
+                        ? `${50 - focus}% up`
+                        : `${focus - 50}% down`}
+                  </span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={focus}
+                  onChange={(e) => setFocus(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Event update{" "}
+                  <span>{updatePeriod === 0 ? "Full" : `hold ${updatePeriod}ms`}</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={200}
+                  step={10}
+                  value={updatePeriod}
+                  onChange={(e) => setUpdatePeriod(+e.target.value)}
+                />
+              </div>
+              <div className="chk">
+                <input
+                  type="checkbox"
+                  id="labels"
+                  checked={showLabels}
+                  onChange={(e) => setShowLabels(e.target.checked)}
+                />
+                <label htmlFor="labels">Event titles on bright blocks</label>
+              </div>
+            </div>
+          )}
 
-          <div className="chk">
-            <input
-              type="checkbox"
-              id="labels"
-              checked={showLabels}
-              onChange={(e) => setShowLabels(e.target.checked)}
-            />
-            <label htmlFor="labels">Event titles on bright blocks</label>
-          </div>
-          <div className="hint">
-            Drop a video file anywhere on the page. Bright pixels become events, dark pixels stay
-            empty.
-          </div>
+          {/* Footage color */}
+          <button className="sec" onClick={() => toggleSection("footage")}>
+            <span>Footage color</span>
+            <span>{sections.footage ? "–" : "+"}</span>
+          </button>
+          {sections.footage && (
+            <div className="secbody">
+              <div className="chk">
+                <input
+                  type="checkbox"
+                  id="invert"
+                  checked={invert}
+                  onChange={(e) => setInvert(e.target.checked)}
+                />
+                <label htmlFor="invert">Invert colors</label>
+              </div>
+              <div className="ctl">
+                <label>
+                  Brightness <span>{brightness}%</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={200}
+                  value={brightness}
+                  onChange={(e) => setBrightness(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Saturation <span>{inSat}%</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={200}
+                  value={inSat}
+                  onChange={(e) => setInSat(+e.target.value)}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Event color */}
+          <button className="sec" onClick={() => toggleSection("events")}>
+            <span>Event color</span>
+            <span>{sections.events ? "–" : "+"}</span>
+          </button>
+          {sections.events && (
+            <div className="secbody">
+              <label className="grouplabel">
+                Palette families
+                <span className="linkbtns">
+                  <button onClick={() => setFamilies(ALL_FAMILIES_ON)}>All</button>
+                  <button
+                    onClick={() =>
+                      setFamilies(Object.fromEntries(FAMILIES.map((f) => [f.name, false])))
+                    }
+                  >
+                    None
+                  </button>
+                </span>
+              </label>
+              <div className="families">
+                {FAMILIES.map((f) => (
+                  <button
+                    key={f.name}
+                    className={`chip${families[f.name] ? " on" : ""}`}
+                    onClick={() => toggleFamily(f.name)}
+                  >
+                    <span className="dot" style={{ background: f.hues[0] }} />
+                    {f.name}
+                  </button>
+                ))}
+              </div>
+              <div className="ctl">
+                <label>
+                  Hue shift <span>{hueShift}°</span>
+                </label>
+                <input
+                  type="range"
+                  min={-180}
+                  max={180}
+                  value={hueShift}
+                  onChange={(e) => setHueShift(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Lightness{" "}
+                  <span>
+                    {lightness === 0 ? "Neutral" : lightness > 0 ? `+${lightness}` : lightness}
+                  </span>
+                </label>
+                <input
+                  type="range"
+                  min={-50}
+                  max={50}
+                  value={lightness}
+                  onChange={(e) => setLightness(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Shade richness <span>{shadeCount}/hue</span>
+                </label>
+                <input
+                  type="range"
+                  min={1}
+                  max={7}
+                  value={shadeCount}
+                  onChange={(e) => setShadeCount(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Vividness <span>{evSat}%</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={200}
+                  value={evSat}
+                  onChange={(e) => setEvSat(+e.target.value)}
+                />
+              </div>
+              <div className="ctl">
+                <label>
+                  Opacity <span>{evOpacity}%</span>
+                </label>
+                <input
+                  type="range"
+                  min={20}
+                  max={100}
+                  value={evOpacity}
+                  onChange={(e) => setEvOpacity(+e.target.value)}
+                />
+              </div>
+              <button className="pbtn resetbtn" onClick={resetEventColors}>
+                Reset event colors
+              </button>
+            </div>
+          )}
+
           <input
             ref={fileRef}
             type="file"
@@ -813,6 +1089,7 @@ export default function CalendarRenderer() {
           />
         </div>
       </div>
+      )}
 
       <video ref={vidRef} muted loop playsInline style={{ display: "none" }} />
     </div>
