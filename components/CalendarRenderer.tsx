@@ -357,6 +357,8 @@ export default function CalendarRenderer() {
     Object.fromEntries(LANES.map((l) => [l.id, { keys: [] as Keyframe[] }])),
   );
   const [selectedKf, setSelectedKf] = useState<{ lane: string; id: string } | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [projectList, setProjectList] = useState<string[]>([]);
 
   // Refs for the render loop (mutable, read every frame)
   const subColsRef = useRef(subCols);
@@ -378,6 +380,7 @@ export default function CalendarRenderer() {
   const durationRef = useRef(duration);
   const currentTimeRef = useRef(0);
   const clockRef = useRef(0); // synthetic clock seconds (demo mode)
+  const startAnchorRef = useRef(0); // last place the playhead was set; play restarts here
   const forceRenderRef = useRef(false); // draw one frame while paused (scrub)
   const paletteInputsRef = useRef({ families, shadeCount, hueShift, lightness });
 
@@ -390,6 +393,7 @@ export default function CalendarRenderer() {
   const playheadElRef = useRef<HTMLDivElement>(null);
   const timeReadoutRef = useRef<HTMLSpanElement>(null);
   const valueSpanRefs = useRef<Record<string, HTMLSpanElement | null>>({});
+  const laneInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
   useEffect(() => { subColsRef.current = subCols; }, [subCols]);
   useEffect(() => { thresholdRef.current = threshold / 100; }, [threshold]);
@@ -614,6 +618,11 @@ export default function CalendarRenderer() {
         }
         const span = valueSpanRefs.current[desc.id];
         if (span) span.textContent = fmtLaneValue(desc, v);
+        const inp = laneInputRefs.current[desc.id];
+        if (inp) {
+          if (desc.kind === "bool") inp.checked = v as boolean;
+          else if (desc.kind === "number") inp.value = String(v);
+        }
       }
       if (palDirty) paletteRef.current = buildPalette(famEff, shadeEff, hueEff, lightEff / 100);
     }
@@ -904,13 +913,20 @@ export default function CalendarRenderer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Delete/Backspace removes the selected keyframe (unless typing in a field).
+  // Keyboard: Space toggles play/pause; Delete/Backspace removes the selected
+  // keyframe. Both ignore events that originate from form fields/buttons.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!selectedKf) return;
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      if (e.key === "Delete" || e.key === "Backspace") {
+      const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+      if (e.code === "Space") {
+        if (typing || tag === "BUTTON") return;
+        e.preventDefault();
+        togglePlay();
+        return;
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedKf) {
+        if (typing) return;
         e.preventDefault();
         deleteKf(selectedKf.lane, selectedKf.id);
       }
@@ -919,6 +935,12 @@ export default function CalendarRenderer() {
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedKf]);
+
+  // Load the saved-project list once on mount.
+  useEffect(() => {
+    refreshProjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function loadFile(f: File) {
     const vid = vidRef.current;
@@ -941,20 +963,31 @@ export default function CalendarRenderer() {
   }
 
   function togglePlay() {
-    const next = !playing;
+    const next = !playingRef.current;
     setPlaying(next);
-    if (sourceRef.current === "video") {
-      const vid = vidRef.current;
-      if (vid) {
-        if (next) vid.play().catch(() => {});
-        else vid.pause();
+    const vid = vidRef.current;
+    if (next) {
+      // Restart from the last place the playhead was set, not where it paused.
+      const t = startAnchorRef.current;
+      currentTimeRef.current = t;
+      if (sourceRef.current === "video") {
+        if (vid) {
+          vid.currentTime = t;
+          vid.play().catch(() => {});
+        }
+      } else {
+        clockRef.current = t;
       }
+    } else {
+      if (sourceRef.current === "video" && vid) vid.pause();
+      forceRenderRef.current = true;
     }
-    if (!next) forceRenderRef.current = true;
   }
 
   // ---- Timeline transport & keyframe editing --------------------------------
 
+  // Seeking sets the playhead AND remembers it as the start anchor — the point
+  // playback restarts from next time it begins.
   function seekTo(t: number) {
     const clamped = Math.max(0, Math.min(durationRef.current || DEMO_DURATION, t));
     if (sourceRef.current === "video") {
@@ -964,6 +997,7 @@ export default function CalendarRenderer() {
       clockRef.current = clamped;
     }
     currentTimeRef.current = clamped;
+    startAnchorRef.current = clamped;
     forceRenderRef.current = true;
   }
 
@@ -1024,15 +1058,14 @@ export default function CalendarRenderer() {
     forceRenderRef.current = true;
   }
 
-  // Editing a control's value. A lane is "armed" once it has any keyframes;
-  // while paused, changing an armed lane writes a keyframe at the current
-  // playhead time (creating or updating only that one), so setting a value at a
-  // new time never disturbs keyframes already placed elsewhere. Unarmed lanes
-  // just edit their plain manual value.
+  // Editing a control's value always writes a keyframe at the current playhead
+  // time: if one already sits there it's updated in place, otherwise a new one
+  // is created. Editing at a new time therefore never disturbs keyframes placed
+  // elsewhere. The manual value is kept in sync as the fallback outside the
+  // keyframe range.
   function commitLaneValue(id: string, v: LaneValue) {
     setLaneManual(id, v);
-    const armed = (lanes[id]?.keys.length ?? 0) > 0;
-    if (armed && !playing) upsertKf(id, currentTimeRef.current, v);
+    upsertKf(id, currentTimeRef.current, v);
   }
 
   // Insert a keyframe at time t, or update the one already at (about) that time.
@@ -1086,6 +1119,92 @@ export default function CalendarRenderer() {
     commitLaneValue("families", Object.fromEntries(FAMILIES.map((f) => [f.name, on])));
   }
 
+  // ---- Projects (JSON files in the repo, via /api/projects) -----------------
+
+  async function refreshProjects() {
+    try {
+      const res = await fetch("/api/projects");
+      if (!res.ok) return;
+      const j = await res.json();
+      setProjectList(Array.isArray(j.projects) ? j.projects : []);
+    } catch {
+      /* offline / no server */
+    }
+  }
+
+  function buildProject() {
+    return {
+      version: 1,
+      duration,
+      startTime: startAnchorRef.current,
+      manual: {
+        subCols, threshold, focus, updatePeriod, invert, brightness, inSat,
+        evSat, evOpacity, families, shadeCount, hueShift, lightness, showLabels,
+      },
+      lanes,
+    };
+  }
+
+  async function saveProject() {
+    const name = projectName.trim() || "untitled";
+    try {
+      const res = await fetch("/api/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name, data: buildProject() }),
+      });
+      const j = await res.json();
+      if (j.name) setProjectName(j.name);
+      refreshProjects();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function applyProject(p: any) {
+    const m = (p && p.manual) || {};
+    if (typeof m.subCols === "number") setSubCols(m.subCols);
+    if (typeof m.threshold === "number") setThreshold(m.threshold);
+    if (typeof m.focus === "number") setFocus(m.focus);
+    if (typeof m.updatePeriod === "number") setUpdatePeriod(m.updatePeriod);
+    if (typeof m.invert === "boolean") setInvert(m.invert);
+    if (typeof m.brightness === "number") setBrightness(m.brightness);
+    if (typeof m.inSat === "number") setInSat(m.inSat);
+    if (typeof m.evSat === "number") setEvSat(m.evSat);
+    if (typeof m.evOpacity === "number") setEvOpacity(m.evOpacity);
+    if (m.families && typeof m.families === "object") setFamilies(m.families);
+    if (typeof m.shadeCount === "number") setShadeCount(m.shadeCount);
+    if (typeof m.hueShift === "number") setHueShift(m.hueShift);
+    if (typeof m.lightness === "number") setLightness(m.lightness);
+    if (typeof m.showLabels === "boolean") setShowLabels(m.showLabels);
+    const dur = typeof p?.duration === "number" ? p.duration : DEMO_DURATION;
+    setDuration(dur);
+    durationRef.current = dur;
+    const src = (p && p.lanes) || {};
+    const nextLanes = Object.fromEntries(
+      LANES.map((l) => [
+        l.id,
+        { keys: Array.isArray(src[l.id]?.keys) ? (src[l.id].keys as Keyframe[]) : [] },
+      ]),
+    );
+    setLanes(nextLanes);
+    setSelectedKf(null);
+    seekTo(typeof p?.startTime === "number" ? p.startTime : 0);
+  }
+
+  async function loadProject(name: string) {
+    if (!name) return;
+    try {
+      const res = await fetch(`/api/projects?name=${encodeURIComponent(name)}`);
+      if (!res.ok) return;
+      applyProject(await res.json());
+      setProjectName(name);
+    } catch {
+      /* ignore */
+    }
+  }
+
   // ---- Pointer interactions -------------------------------------------------
 
   function timeFromClientX(rect: DOMRect, clientX: number) {
@@ -1131,6 +1250,9 @@ export default function CalendarRenderer() {
     if (desc.kind === "number") {
       return (
         <input
+          ref={(el) => {
+            laneInputRefs.current[desc.id] = el;
+          }}
           type="range"
           min={desc.min}
           max={desc.max}
@@ -1144,6 +1266,9 @@ export default function CalendarRenderer() {
       return (
         <label className="tl-toggle">
           <input
+            ref={(el) => {
+              laneInputRefs.current[desc.id] = el;
+            }}
             type="checkbox"
             checked={editVal as boolean}
             onChange={(e) => commitLaneValue(desc.id, e.target.checked)}
@@ -1266,6 +1391,33 @@ export default function CalendarRenderer() {
             0:00 / {fmtTime(duration)}
           </span>
           <div className="tl-spacer" />
+          <input
+            className="tl-proj-name"
+            type="text"
+            placeholder="project name"
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+          />
+          <button className="pbtn" onClick={saveProject}>
+            Save
+          </button>
+          <select
+            className="tl-proj-load"
+            value=""
+            onChange={(e) => {
+              const v = e.target.value;
+              e.target.selectedIndex = 0;
+              if (v) loadProject(v);
+            }}
+          >
+            <option value="">Load…</option>
+            {projectList.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+          <span className="tl-divider" />
           <button className="pbtn primary" onClick={() => fileRef.current?.click()}>
             Upload
           </button>

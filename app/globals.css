@@ -184,6 +184,17 @@ body {
 .tl-time { font-variant-numeric: tabular-nums; color: #bdc1c6; margin-left: 4px; min-width: 92px; }
 .tl-spacer { flex: 1; }
 .timeline .pbtn { padding: 5px 10px; }
+.tl-proj-name {
+  width: 130px; height: 26px; box-sizing: border-box;
+  background: #2a2c2f; border: 1px solid #3c4043; border-radius: 6px;
+  color: #e8eaed; font-size: 12px; padding: 0 8px;
+}
+.tl-proj-name::placeholder { color: #9aa0a6; }
+.tl-proj-load {
+  height: 26px; background: #3c4043; border: none; border-radius: 6px;
+  color: #e8eaed; font-size: 12px; padding: 0 6px; cursor: pointer;
+}
+.tl-divider { width: 1px; height: 20px; background: #3c4043; margin: 0 2px; }
 
 .tl-scroll { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 

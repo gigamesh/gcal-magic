@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "duration": 10,
+  "manual": {
+    "subCols": 10,
+    "threshold": 12,
+    "focus": 50,
+    "updatePeriod": 180,
+    "invert": false,
+    "brightness": 41,
+    "inSat": 100,
+    "evSat": 100,
+    "evOpacity": 100,
+    "families": {
+      "Reds": true,
+      "Oranges": true,
+      "Yellows": true,
+      "Greens": true,
+      "Teals": true,
+      "Blues": true,
+      "Purples": true,
+      "Neutrals": true
+    },
+    "shadeCount": 5,
+    "hueShift": 0,
+    "lightness": 0,
+    "showLabels": true
+  },
+  "lanes": {
+    "subCols": {
+      "keys": []
+    },
+    "threshold": {
+      "keys": []
+    },
+    "focus": {
+      "keys": []
+    },
+    "updatePeriod": {
+      "keys": [
+        {
+          "id": "9pl9nd5x",
+          "t": 0.8043891540852576,
+          "value": 0
+        },
+        {
+          "id": "b5paegk1",
+          "t": 4.608507715364121,
+          "value": 180
+        }
+      ]
+    },
+    "brightness": {
+      "keys": []
+    },
+    "inSat": {
+      "keys": []
+    },
+    "evSat": {
+      "keys": []
+    },
+    "evOpacity": {
+      "keys": []
+    },
+    "hueShift": {
+      "keys": []
+    },
+    "lightness": {
+      "keys": []
+    },
+    "shadeCount": {
+      "keys": []
+    },
+    "invert": {
+      "keys": []
+    },
+    "showLabels": {
+      "keys": []
+    },
+    "families": {
+      "keys": []
+    }
+  }
+}
