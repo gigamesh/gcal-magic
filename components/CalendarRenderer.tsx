@@ -568,8 +568,8 @@ export default function CalendarRenderer() {
         const titled =
           atLowest ||
           (showLabelsRef.current &&
-            lumMax > 0.55 &&
-            w >= 32 &&
+            // Only title events that span the full width of their day.
+            cw === perDay &&
             h >= 9 &&
             // Always title multi-row blocks; single cells stay sparse.
             (ch >= 2 || hash2(cx * 2 + 1, cy) < 0.16));
