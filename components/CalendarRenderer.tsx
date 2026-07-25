@@ -278,6 +278,7 @@ const LANES: LaneDesc[] = [
   { id: "subCols", label: "Resolution", kind: "number", min: MIN_RES, max: 16, step: 1, suffix: "/day" },
   { id: "threshold", label: "Darkness", kind: "number", min: 0, max: 60, step: 1, refDivisor: 100, suffix: "%" },
   { id: "focus", label: "Focal point", kind: "number", min: 0, max: 100, step: 1, refDivisor: 100, suffix: "%" },
+  { id: "zoom", label: "Zoom", kind: "number", min: 100, max: 400, step: 1, refDivisor: 100, suffix: "%" },
   { id: "updatePeriod", label: "Event hold", kind: "number", min: 0, max: 200, step: 10, suffix: "ms" },
   { id: "brightness", label: "Brightness", kind: "number", min: 0, max: 200, step: 1, refDivisor: 100, suffix: "%" },
   { id: "inSat", label: "Saturation", kind: "number", min: 0, max: 200, step: 1, refDivisor: 100, suffix: "%" },
@@ -339,6 +340,7 @@ export default function CalendarRenderer() {
   const [subCols, setSubCols] = useState(10);
   const [threshold, setThreshold] = useState(12);
   const [focus, setFocus] = useState(50);
+  const [zoom, setZoom] = useState(100);
   const [updatePeriod, setUpdatePeriod] = useState(0);
   const [invert, setInvert] = useState(false);
   const [brightness, setBrightness] = useState(100);
@@ -352,6 +354,7 @@ export default function CalendarRenderer() {
   const [showLabels, setShowLabels] = useState(true);
   const [playing, setPlaying] = useState(true);
   const [timelineOpen, setTimelineOpen] = useState(true);
+  const [drawerH, setDrawerH] = useState(340);
   const [duration, setDuration] = useState(DEMO_DURATION);
   const [lanes, setLanes] = useState<Record<string, { keys: Keyframe[] }>>(() =>
     Object.fromEntries(LANES.map((l) => [l.id, { keys: [] as Keyframe[] }])),
@@ -364,6 +367,7 @@ export default function CalendarRenderer() {
   const subColsRef = useRef(subCols);
   const thresholdRef = useRef(threshold / 100);
   const focusRef = useRef(focus / 100);
+  const zoomRef = useRef(zoom / 100);
   const updatePeriodRef = useRef(updatePeriod);
   const invertRef = useRef(invert);
   const brightnessRef = useRef(brightness / 100);
@@ -398,6 +402,7 @@ export default function CalendarRenderer() {
   useEffect(() => { subColsRef.current = subCols; }, [subCols]);
   useEffect(() => { thresholdRef.current = threshold / 100; }, [threshold]);
   useEffect(() => { focusRef.current = focus / 100; }, [focus]);
+  useEffect(() => { zoomRef.current = zoom / 100; }, [zoom]);
   useEffect(() => { updatePeriodRef.current = updatePeriod; }, [updatePeriod]);
   useEffect(() => { invertRef.current = invert; }, [invert]);
   useEffect(() => { brightnessRef.current = brightness / 100; }, [brightness]);
@@ -422,6 +427,7 @@ export default function CalendarRenderer() {
     subColsRef.current = subCols;
     thresholdRef.current = threshold / 100;
     focusRef.current = focus / 100;
+    zoomRef.current = zoom / 100;
     updatePeriodRef.current = updatePeriod;
     brightnessRef.current = brightness / 100;
     inSatRef.current = inSat / 100;
@@ -582,6 +588,7 @@ export default function CalendarRenderer() {
         case "subCols": subColsRef.current = Math.round(v as number); break;
         case "threshold": thresholdRef.current = (v as number) / div; break;
         case "focus": focusRef.current = (v as number) / div; break;
+        case "zoom": zoomRef.current = (v as number) / div; break;
         case "updatePeriod": updatePeriodRef.current = v as number; break;
         case "brightness": brightnessRef.current = (v as number) / div; break;
         case "inSat": inSatRef.current = (v as number) / div; break;
@@ -725,6 +732,18 @@ export default function CalendarRenderer() {
         sh = sw / gridAR;
         sx = 0;
         sy = (src.h - sh) * focus;
+      }
+      // Zoom magnifies the footage by sampling a smaller sub-rectangle, shrunk
+      // around the cover-crop center (which already reflects the focal point),
+      // then clamped inside the source.
+      const zoom = zoomRef.current;
+      if (zoom > 1) {
+        const cx = sx + sw / 2;
+        const cy = sy + sh / 2;
+        sw /= zoom;
+        sh /= zoom;
+        sx = Math.max(0, Math.min(src.w - sw, cx - sw / 2));
+        sy = Math.max(0, Math.min(src.h - sh, cy - sh / 2));
       }
       offCtx!.drawImage(src.el, sx, sy, sw, sh, 0, 0, cols, rows);
       const data = offCtx!.getImageData(0, 0, cols, rows).data;
@@ -1008,6 +1027,7 @@ export default function CalendarRenderer() {
       case "subCols": return subCols;
       case "threshold": return threshold;
       case "focus": return focus;
+      case "zoom": return zoom;
       case "updatePeriod": return updatePeriod;
       case "brightness": return brightness;
       case "inSat": return inSat;
@@ -1028,6 +1048,7 @@ export default function CalendarRenderer() {
       case "subCols": setSubCols(v as number); subColsRef.current = v as number; break;
       case "threshold": setThreshold(v as number); thresholdRef.current = (v as number) / 100; break;
       case "focus": setFocus(v as number); focusRef.current = (v as number) / 100; break;
+      case "zoom": setZoom(v as number); zoomRef.current = (v as number) / 100; break;
       case "updatePeriod": setUpdatePeriod(v as number); updatePeriodRef.current = v as number; break;
       case "brightness": setBrightness(v as number); brightnessRef.current = (v as number) / 100; break;
       case "inSat": setInSat(v as number); inSatRef.current = (v as number) / 100; break;
@@ -1138,7 +1159,7 @@ export default function CalendarRenderer() {
       duration,
       startTime: startAnchorRef.current,
       manual: {
-        subCols, threshold, focus, updatePeriod, invert, brightness, inSat,
+        subCols, threshold, focus, zoom, updatePeriod, invert, brightness, inSat,
         evSat, evOpacity, families, shadeCount, hueShift, lightness, showLabels,
       },
       lanes,
@@ -1167,6 +1188,7 @@ export default function CalendarRenderer() {
     if (typeof m.subCols === "number") setSubCols(m.subCols);
     if (typeof m.threshold === "number") setThreshold(m.threshold);
     if (typeof m.focus === "number") setFocus(m.focus);
+    if (typeof m.zoom === "number") setZoom(m.zoom);
     if (typeof m.updatePeriod === "number") setUpdatePeriod(m.updatePeriod);
     if (typeof m.invert === "boolean") setInvert(m.invert);
     if (typeof m.brightness === "number") setBrightness(m.brightness);
@@ -1216,6 +1238,23 @@ export default function CalendarRenderer() {
     const rect = e.currentTarget.getBoundingClientRect();
     seekTo(timeFromClientX(rect, e.clientX));
     const move = (ev: PointerEvent) => seekTo(timeFromClientX(rect, ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  // Drag the top edge of the drawer to resize its height.
+  function onResizeDown(e: ReactPointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = drawerH;
+    const move = (ev: PointerEvent) => {
+      const h = Math.max(140, Math.min(window.innerHeight - 80, startH + (startY - ev.clientY)));
+      setDrawerH(h);
+    };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
@@ -1379,7 +1418,11 @@ export default function CalendarRenderer() {
       </div>
 
       {/* Timeline drawer */}
-      <div className={`timeline${timelineOpen ? "" : " closed"}`}>
+      <div
+        className={`timeline${timelineOpen ? "" : " closed"}`}
+        style={{ height: drawerH }}
+      >
+        <div className="tl-resize" onPointerDown={onResizeDown} />
         <div className="tl-transport">
           <button className="tl-icon" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"}>
             {playing ? "❚❚" : "▶"}

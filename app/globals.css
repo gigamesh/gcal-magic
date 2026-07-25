@@ -161,15 +161,28 @@ body {
 .hiddenInput { display: none; }
 
 /* ---------- Timeline drawer ---------- */
+/* Fixed overlay (not a flex child) so toggling it never resizes the calendar
+   grid — the footage positioning stays constant whether it's open or closed. */
 .timeline {
-  flex: 0 0 auto;
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
   height: min(46vh, 460px);
   background: #202124; color: #e8eaed;
   border-top: 1px solid #3c4043;
   display: flex; flex-direction: column;
   font-size: 12px;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35);
 }
 .timeline.closed { display: none; }
+.tl-resize {
+  flex: 0 0 auto; height: 8px; cursor: ns-resize;
+  background: #202124; border-bottom: 1px solid #3c4043; position: relative;
+}
+.tl-resize::after {
+  content: ""; position: absolute; left: 50%; top: 3px; transform: translateX(-50%);
+  width: 36px; height: 2px; border-radius: 2px; background: #5f6368;
+}
+.tl-resize:hover { background: #2a2c2f; }
+.tl-resize:hover::after { background: #8ab4f8; }
 
 .tl-transport {
   flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
