@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "duration": 19.05,
+  "startTime": 18.409942,
+  "manual": {
+    "subCols": 6.59213655254822,
+    "threshold": 12,
+    "focus": 50,
+    "zoom": 159,
+    "posX": 30.54760997496027,
+    "posY": 16,
+    "updatePeriod": 500,
+    "invert": false,
+    "brightness": 71,
+    "inSat": 141,
+    "evSat": 180,
+    "evOpacity": 100,
+    "families": {
+      "Reds": true,
+      "Oranges": true,
+      "Yellows": true,
+      "Greens": true,
+      "Teals": true,
+      "Blues": true,
+      "Purples": true,
+      "Neutrals": true
+    },
+    "shadeCount": 5,
+    "hueShift": 0,
+    "lightness": 0,
+    "showLabels": true
+  },
+  "lanes": {
+    "subCols": {
+      "keys": [
+        {
+          "id": "qp9pxsw7",
+          "t": 2.9621287378771552,
+          "value": 4
+        },
+        {
+          "id": "73ac7ejp",
+          "t": 7.185504676429485,
+          "value": 16
+        }
+      ]
+    },
+    "threshold": {
+      "keys": []
+    },
+    "focus": {
+      "keys": []
+    },
+    "zoom": {
+      "keys": [
+        {
+          "id": "xhjryxaz",
+          "t": 0,
+          "value": 159
+        },
+        {
+          "id": "nuxaz7xw",
+          "t": 7.110225553171642,
+          "value": 159
+        },
+        {
+          "id": "k61ote32",
+          "t": 9.210245,
+          "value": 198
+        }
+      ]
+    },
+    "posX": {
+      "keys": [
+        {
+          "id": "vdmuxl2m",
+          "t": 0,
+          "value": 30
+        },
+        {
+          "id": "ds3c4trp",
+          "t": 7.075156,
+          "value": 31
+        },
+        {
+          "id": "v5gfwoti",
+          "t": 9.755337,
+          "value": -4
+        }
+      ]
+    },
+    "posY": {
+      "keys": [
+        {
+          "id": "3r31j1i1",
+          "t": 0.007245718949893391,
+          "value": 16
+        },
+        {
+          "id": "g1hihl8b",
+          "t": 7.105284,
+          "value": 16
+        },
+        {
+          "id": "hhfksqy7",
+          "t": 9.020602,
+          "value": 5
+        }
+      ]
+    },
+    "updatePeriod": {
+      "keys": [
+        {
+          "id": "0wvaobxi",
+          "t": 0,
+          "value": 500
+        },
+        {
+          "id": "5bndo3hn",
+          "t": 3.8637198981484593,
+          "value": 130
+        },
+        {
+          "id": "od6z6sg2",
+          "t": 7.1188091232898,
+          "value": 0
+        }
+      ]
+    },
+    "brightness": {
+      "keys": []
+    },
+    "inSat": {
+      "keys": []
+    },
+    "evSat": {
+      "keys": []
+    },
+    "evOpacity": {
+      "keys": []
+    },
+    "hueShift": {
+      "keys": []
+    },
+    "lightness": {
+      "keys": []
+    },
+    "shadeCount": {
+      "keys": []
+    },
+    "invert": {
+      "keys": []
+    },
+    "showLabels": {
+      "keys": []
+    },
+    "families": {
+      "keys": []
+    }
+  }
+}
